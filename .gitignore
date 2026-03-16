@@ -25,7 +25,7 @@ coverage/
 # Environment files
 .env
 .env.local
-!.env.example
+.env.example
 
 # OS/Editor
 .DS_Store
