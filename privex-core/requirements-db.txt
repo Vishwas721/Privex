@@ -1,3 +1,5 @@
 neo4j>=5.13.0
 chromadb>=0.4.0
 faiss-cpu>=1.7.4
+SQLAlchemy>=2.0.0
+aiosqlite>=0.20.0

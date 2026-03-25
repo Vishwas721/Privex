@@ -9,6 +9,7 @@ import httpx
 import numpy as np
 from ultralytics import YOLO
 
+from core.database import log_event
 from core.schemas import FramePayload
 
 # Bounded queue to avoid unbounded memory growth if inference stalls.
@@ -110,6 +111,18 @@ async def frame_worker_loop() -> None:
                 "detected": detected_classes,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+
+            try:
+                await log_event(
+                    "yolo_detection",
+                    {
+                        "detected": detected_classes,
+                        "source": payload.source,
+                        "frame_timestamp": payload.timestamp,
+                    },
+                )
+            except Exception as exc:
+                print(f"[frame-worker] failed to write audit log: {exc}")
 
             try:
                 async with httpx.AsyncClient(timeout=3.0) as client:
