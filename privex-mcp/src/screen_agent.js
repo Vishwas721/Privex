@@ -2,18 +2,21 @@ import 'dotenv/config';
 import screenshot from 'screenshot-desktop';
 import sharp from 'sharp';
 
-const AI_CORE_URL = process.env.AI_CORE_URL;
+// The .env should be: AI_CORE_URL=http://localhost:8000/api/analyze-frame
+const AI_CORE_URL = process.env.AI_CORE_URL; 
 const FRAME_INTERVAL_MS = 2000;
 const REQUEST_TIMEOUT_MS = 1000;
 
 if (!AI_CORE_URL) {
-  console.error('AI_CORE_URL is not set. Screen agent will continue running and retry after each cycle.');
+  console.error('AI_CORE_URL is not set. Screen agent will fail.');
 }
 
 async function captureAndSendFrame() {
   try {
+    // 1. Capture Screen
     const screenBuffer = await screenshot({ format: 'png' });
 
+    // 2. Downscale (Visual Firewall constraint)
     const resizedBuffer = await sharp(screenBuffer)
       .resize({
         width: 640,
@@ -24,22 +27,21 @@ async function captureAndSendFrame() {
       .toBuffer();
 
     const base64Image = resizedBuffer.toString('base64');
-    console.log(`Captured frame (base64 length): ${base64Image.length}`);
+    console.log(`[MCP] Captured frame. Size: ${base64Image.length} bytes.`);
 
+    // 3. Construct the EXACT payload FastAPI expects
     const payload = {
-      base64_image: base64Image,
-      timestamp: Date.now()/1000.0, 
+      image_base64: base64Image,
+      timestamp: Date.now() / 1000.0,
+      source: "screen_mcp" // Added missing source key
     };
-
-    if (!AI_CORE_URL) {
-      throw new Error('Missing AI_CORE_URL environment variable.');
-    }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const response = await fetch(`${AI_CORE_URL}/api/analyze-frame`, {
+      // 4. Send to the exact URL from the .env (No double-stacking)
+      const response = await fetch(AI_CORE_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -49,29 +51,26 @@ async function captureAndSendFrame() {
       });
 
       if (!response.ok) {
-        const responseText = await response.text().catch(() => 'Unable to read response body');
-        console.error(`Frame POST failed: ${response.status} ${response.statusText}. Body: ${responseText}`);
+        console.error(`[MCP-ERROR] Frame POST failed: ${response.status}`);
+      } else {
+        console.log(`[MCP] Payload successfully sent to Port 8000.`);
       }
     } catch (error) {
-      if (error && error.name === 'AbortError') {
-        console.error(`Frame POST timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      if (error.name === 'AbortError') {
+        console.error(`[MCP-ERROR] Frame POST timed out.`);
       } else {
-        console.error('Frame POST error:', error);
+        console.error('[MCP-ERROR] Frame POST error:', error.message);
       }
     } finally {
       clearTimeout(timeout);
     }
   } catch (error) {
-    console.error('Capture/process cycle error:', error);
+    console.error('[MCP-ERROR] Capture cycle error:', error.message);
   } finally {
-    setTimeout(() => {
-      captureAndSendFrame().catch((loopError) => {
-        console.error('Unexpected loop error:', loopError);
-      });
-    }, FRAME_INTERVAL_MS);
+    // Safely loop every 2 seconds
+    setTimeout(captureAndSendFrame, FRAME_INTERVAL_MS);
   }
 }
 
-captureAndSendFrame().catch((startupError) => {
-  console.error('Screen agent failed to start:', startupError);
-});
+console.log("🛡️ Privex Visual Firewall: Autopilot Engaged.");
+captureAndSendFrame();

@@ -1,8 +1,6 @@
 from pydantic import BaseModel
 
-
 class FramePayload(BaseModel):
-    """Payload schema for sampled screen frames from the UI client."""
-
-    base64_image: str
     timestamp: float
+    source: str
+    image_base64: str

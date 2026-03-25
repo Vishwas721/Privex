@@ -5,7 +5,7 @@ import { WebSocketServer } from 'ws';
 const app = express();
 const port = 3000;
 
-app.use(cors());
+app.use(cors({ origin: 'http://localhost:5173' }));
 app.use(express.json());
 
 // 1. Initialize HTTP Server
