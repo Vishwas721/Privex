@@ -1,45 +1,95 @@
-import React from 'react';
+import { useEffect, useMemo, useState } from 'react';
+
+import AlertCard from './components/AlertCard';
+import SidebarNav from './components/SidebarNav';
 
 function App() {
+  const [alerts, setAlerts] = useState([]);
+  const [socketState, setSocketState] = useState('connecting');
+
+  useEffect(() => {
+    const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:3000';
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      setSocketState('online');
+    };
+
+    ws.onclose = () => {
+      setSocketState('offline');
+    };
+
+    ws.onerror = () => {
+      setSocketState('error');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        setAlerts((currentAlerts) => {
+          const normalizedAlert = {
+            id: data.id ?? crypto.randomUUID(),
+            risk: data.risk ?? 'High',
+            detectedItem:
+              data.detected_item ??
+              (Array.isArray(data.detected) ? data.detected.join(', ') : undefined) ??
+              'Unknown Threat',
+            timestamp: data.timestamp ?? new Date().toISOString(),
+            raw: data,
+          };
+
+          return [normalizedAlert, ...currentAlerts];
+        });
+      } catch (err) {
+        console.error('Failed to parse WebSocket alert payload:', err);
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
+
+  const statusPillClass = useMemo(() => {
+    if (socketState === 'online') return 'border-emerald-400/40 text-emerald-300 bg-emerald-400/10';
+    if (socketState === 'connecting') return 'border-amber-400/40 text-amber-200 bg-amber-400/10';
+    return 'border-rose-500/50 text-rose-200 bg-rose-500/10';
+  }, [socketState]);
+
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-8">
-      <div className="max-w-4xl mx-auto">
-        
-        {/* Header */}
-        <header className="mb-10 border-b border-gray-700 pb-4">
-          <h1 className="text-3xl font-bold text-blue-400">Privex</h1>
-          <p className="text-gray-400 mt-2">Privacy-First Personal AI Guardian</p>
-        </header>
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <div className="mx-auto flex max-w-360 flex-col lg:flex-row">
+        <SidebarNav />
 
-        {/* Approval Queue Section */}
-        <section>
-          <h2 className="text-xl font-semibold mb-4 text-gray-200">Action Approval Queue</h2>
-          
-          {/* Mock Alert Card */}
-          <div className="bg-gray-800 border border-red-500 rounded-lg p-6 shadow-lg">
-            <div className="flex items-center justify-between mb-4">
-              <span className="bg-red-500/20 text-red-400 px-3 py-1 rounded-full text-sm font-medium tracking-wide border border-red-500/50">
-                CRITICAL RISK
-              </span>
-              <span className="text-gray-400 text-sm">Just now</span>
+        <main className="flex-1 p-6 sm:p-8 lg:p-10">
+          <header className="mb-8 flex flex-col gap-4 border-b border-slate-800 pb-6 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Realtime Monitoring</p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-100 sm:text-4xl">
+                Active Threats Dashboard
+              </h1>
             </div>
-            
-            <p className="text-lg mb-6">
-              <strong>Phishing Agent</strong> detected a malicious URL in an open email. 
-              The AI proposes closing the tab and deleting the email.
-            </p>
-            
-            <div className="flex space-x-4">
-              <button className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded font-medium transition-colors">
-                Block Action
-              </button>
-              <button className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-medium transition-colors">
-                Approve Action
-              </button>
-            </div>
-          </div>
-        </section>
 
+            <span className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wider ${statusPillClass}`}>
+              Socket: {socketState}
+            </span>
+          </header>
+
+          <section className="space-y-4">
+            {alerts.length === 0 && (
+              <div className="rounded-xl border border-dashed border-slate-700 bg-slate-900/50 p-8 text-center">
+                <p className="text-lg font-medium text-slate-200">No active threats detected yet</p>
+                <p className="mt-2 text-sm text-slate-400">
+                  Incoming WebSocket alerts from {import.meta.env.VITE_WS_URL || 'ws://localhost:3000'} will appear here in real time.
+                </p>
+              </div>
+            )}
+
+            {alerts.map((alert) => (
+              <AlertCard key={alert.id} alert={alert} />
+            ))}
+          </section>
+        </main>
       </div>
     </div>
   );

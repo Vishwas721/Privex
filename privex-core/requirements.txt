@@ -1,30 +1,5 @@
-# FastAPI & Web Framework
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-pydantic>=2.5.0
-
-# Computer Vision & OCR
-opencv-python>=4.8.0
-ultralytics>=8.0.0
-pytesseract>=0.3.10
-
-# Graph Database & Vector Storage
-neo4j>=5.13.0
-chromadb>=0.4.0
-faiss-cpu>=1.7.4
-
-# LLM & AI Framework
-langgraph>=0.0.1
-langchain>=0.1.0
-langchain-community>=0.0.1
-
-# Blockchain & Web3
-web3>=6.11.0
-
-# Data Processing
-numpy>=1.26.0
-pandas>=2.1.0
-
-# Utilities
-python-dotenv>=1.0.0
-pydantic-settings>=2.1.0
+-r requirements-base.txt
+-r requirements-ml.txt
+-r requirements-db.txt
+-r requirements-ai.txt
+-r requirements-web3.txt
