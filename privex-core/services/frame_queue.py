@@ -106,14 +106,8 @@ async def frame_worker_loop() -> None:
             if not detected_classes:
                 continue
 
-            alert = {
-                "risk": "High",
-                "detected": detected_classes,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-
             try:
-                await log_event(
+                event_id = await log_event(
                     "yolo_detection",
                     {
                         "detected": detected_classes,
@@ -121,8 +115,16 @@ async def frame_worker_loop() -> None:
                         "frame_timestamp": payload.timestamp,
                     },
                 )
+
+                alert = {
+                    "id": event_id,
+                    "risk": "High",
+                    "detected": detected_classes,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
             except Exception as exc:
                 print(f"[frame-worker] failed to write audit log: {exc}")
+                continue
 
             try:
                 async with httpx.AsyncClient(timeout=3.0) as client:

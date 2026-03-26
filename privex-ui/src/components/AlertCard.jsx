@@ -7,7 +7,7 @@ function formatTimestamp(value) {
   return date.toLocaleString();
 }
 
-export default function AlertCard({ alert }) {
+export default function AlertCard({ alert, onApprove, onBlock }) {
   return (
     <article className="rounded-xl border border-rose-500/50 bg-linear-to-br from-slate-900 via-slate-900 to-rose-950/40 p-5 shadow-[0_0_0_1px_rgba(244,63,94,0.15),0_12px_40px_-12px_rgba(244,63,94,0.45)]">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -25,6 +25,7 @@ export default function AlertCard({ alert }) {
       <div className="mt-5 flex flex-col gap-3 sm:flex-row">
         <button
           type="button"
+          onClick={onApprove}
           className="inline-flex items-center justify-center gap-2 rounded-lg border border-emerald-400/40 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-500/20"
         >
           <CheckCircle2 size={16} />
@@ -32,6 +33,7 @@ export default function AlertCard({ alert }) {
         </button>
         <button
           type="button"
+          onClick={onBlock}
           className="inline-flex items-center justify-center gap-2 rounded-lg border border-rose-400/50 bg-rose-500/20 px-4 py-2 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/30"
         >
           <Ban size={16} />

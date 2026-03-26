@@ -6,6 +6,7 @@ import SidebarNav from './components/SidebarNav';
 function App() {
   const [alerts, setAlerts] = useState([]);
   const [socketState, setSocketState] = useState('connecting');
+  const coreApiUrl = import.meta.env.VITE_CORE_API_URL || 'http://localhost:8000';
 
   useEffect(() => {
     const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:3000';
@@ -26,9 +27,15 @@ function App() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+
+        if (!data.id) {
+          console.error('CRITICAL: Received untracked alert without an ID. Dropping payload to maintain audit integrity.');
+          return;
+        }
+
         setAlerts((currentAlerts) => {
           const normalizedAlert = {
-            id: data.id ?? crypto.randomUUID(),
+            id: data.id,
             risk: data.risk ?? 'High',
             detectedItem:
               data.detected_item ??
@@ -55,6 +62,32 @@ function App() {
     if (socketState === 'connecting') return 'border-amber-400/40 text-amber-200 bg-amber-400/10';
     return 'border-rose-500/50 text-rose-200 bg-rose-500/10';
   }, [socketState]);
+
+  async function handleResolveAlert(alertId, decision) {
+    const payload = {
+      alert_id: alertId,
+      decision,
+      timestamp: Date.now() / 1000,
+    };
+
+    try {
+      const response = await fetch(`${coreApiUrl}/api/resolve-alert`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Resolve alert request failed with status ${response.status}`);
+      }
+
+      setAlerts((currentAlerts) => currentAlerts.filter((alert) => alert.id !== alertId));
+    } catch (error) {
+      console.error('Failed to resolve alert. Core API may be unavailable:', error);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -86,7 +119,12 @@ function App() {
             )}
 
             {alerts.map((alert) => (
-              <AlertCard key={alert.id} alert={alert} />
+              <AlertCard
+                key={alert.id}
+                alert={alert}
+                onApprove={() => handleResolveAlert(alert.id, 'approved')}
+                onBlock={() => handleResolveAlert(alert.id, 'blocked')}
+              />
             ))}
           </section>
         </main>
