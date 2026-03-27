@@ -29,6 +29,29 @@ app.get('/api/logs', async (req, res) => {
   }
 });
 
+// NEW: Proxy Chat requests from React -> Express -> FastAPI Core
+app.post('/api/chat', async (req, res) => {
+  const coreApiUrl = process.env.CORE_API_URL || 'http://127.0.0.1:8000';
+
+  try {
+    const response = await fetch(`${coreApiUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Python Core returned status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    res.status(200).json(data);
+  } catch (error) {
+    console.error('Failed to proxy chat to Python Core:', error);
+    res.status(500).json({ error: 'Failed to reach AI Core' });
+  }
+});
+
 // 1. Initialize HTTP Server
 const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Privex MCP server listening on port ${port}`);

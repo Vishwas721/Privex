@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import AlertCard from './components/AlertCard';
+import ChatWidget from './components/ChatWidget';
 import LedgerTable from './components/LedgerTable';
 import SidebarNav from './components/SidebarNav';
 
@@ -132,6 +133,8 @@ function App() {
           <LedgerTable />
         </main>
       </div>
+
+      <ChatWidget />
     </div>
   );
 }
