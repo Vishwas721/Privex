@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import AlertCard from './components/AlertCard';
+import LedgerTable from './components/LedgerTable';
 import SidebarNav from './components/SidebarNav';
 
 function App() {
@@ -127,6 +128,8 @@ function App() {
               />
             ))}
           </section>
+
+          <LedgerTable />
         </main>
       </div>
     </div>

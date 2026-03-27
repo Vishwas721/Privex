@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from core.graph import privex_app, AgentState
-from core.database import close_db, init_db, log_event
+from core.database import close_db, get_recent_logs, init_db, log_event
 from api.routes.vision import router as vision_router
 from services.frame_queue import frame_worker_loop
 
@@ -61,6 +61,12 @@ async def chat_endpoint(payload: ChatQuery):
 
     final_state = privex_app.invoke(initial_state)
     return final_state
+
+
+@app.get("/api/logs")
+async def get_logs_endpoint(limit: int = 50):
+    logs = await get_recent_logs(limit=limit)
+    return {"logs": logs}
 
 
 app.include_router(vision_router)
