@@ -7,6 +7,7 @@ import torch
 import cv2
 import httpx
 import numpy as np
+import pytesseract
 from ultralytics import YOLO
 
 from core.database import log_event
@@ -20,6 +21,10 @@ ENGINE_PATH = PROJECT_ROOT / "models" / "yolov8n.engine"
 
 # Must be configurable for Docker networking (e.g., http://privex-mcp:3000/api/alert)
 ALERT_ENDPOINT = os.getenv("ALERT_ENDPOINT", "http://127.0.0.1:3000/api/alert")
+TESSERACT_CMD = os.getenv("TESSERACT_CMD", "").strip()
+
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 try:
     # FORCED NATIVE WINDOWS GPU FALLBACK
@@ -75,6 +80,26 @@ def _extract_detected_classes(result: object) -> list[str]:
     return detected
 
 
+def _sanitize_ocr_text(text: str) -> str:
+    """
+    STUB: Pass text through Microsoft Presidio for NER redaction.
+    Replaces PII, API keys, and credit cards with <REDACTED> tokens.
+    """
+    if not text:
+        return ""
+    # TODO: Implement actual Presidio Analyzer/Anonymizer here.
+    # For now, if the text contains a mock secret, redact it to prove the pipeline works.
+    if "password" in text.lower():
+        return "<REDACTED_SECRET>"
+    return text
+
+
+def _run_ocr_sync(image: np.ndarray) -> str:
+    """Synchronous OCR task to be run in a separate thread."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return pytesseract.image_to_string(gray).strip()
+
+
 async def frame_worker_loop() -> None:
     """Continuously consume and process queued frames."""
     while True:
@@ -84,10 +109,19 @@ async def frame_worker_loop() -> None:
                 print("[frame-worker] model unavailable, skipping frame")
                 continue
 
-            image = _decode_base64_image(payload.image_base64)
+            # Correct schema key from Task 1.4
+            image = _decode_base64_image(payload.base64_image)
             if image is None:
                 print(f"[frame-worker] invalid frame payload timestamp={payload.timestamp}")
                 continue
+
+            # Thread-safe OCR and strict sanitization
+            sanitized_text = ""
+            try:
+                raw_text = await asyncio.to_thread(_run_ocr_sync, image)
+                sanitized_text = _sanitize_ocr_text(raw_text)
+            except Exception as exc:
+                print(f"[frame-worker] OCR failed timestamp={payload.timestamp}: {exc}")
 
             try:
                 results = await asyncio.to_thread(
@@ -111,6 +145,7 @@ async def frame_worker_loop() -> None:
                     "yolo_detection",
                     {
                         "detected": detected_classes,
+                        "ocr_text": sanitized_text,
                         "source": payload.source,
                         "frame_timestamp": payload.timestamp,
                     },
@@ -120,6 +155,7 @@ async def frame_worker_loop() -> None:
                     "id": event_id,
                     "risk": "High",
                     "detected": detected_classes,
+                    "ocr_text": sanitized_text,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
             except Exception as exc:

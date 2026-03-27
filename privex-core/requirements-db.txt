@@ -3,3 +3,4 @@ chromadb>=0.4.0
 faiss-cpu>=1.7.4
 SQLAlchemy>=2.0.0
 aiosqlite>=0.20.0
+langchain-postgres>=0.0.12
