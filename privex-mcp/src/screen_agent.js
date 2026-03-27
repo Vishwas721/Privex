@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import activeWin from 'active-win';
 import screenshot from 'screenshot-desktop';
 import sharp from 'sharp';
 
@@ -29,11 +30,20 @@ async function captureAndSendFrame() {
     const base64Image = resizedBuffer.toString('base64');
     console.log(`[MCP] Captured frame. Size: ${base64Image.length} bytes.`);
 
+    const activeWindow = await activeWin();
+    const activeApp = activeWindow
+      ? {
+          title: activeWindow.title || '',
+          owner: activeWindow.owner?.name || '',
+        }
+      : null;
+
     // 3. Construct the EXACT payload FastAPI expects
     const payload = {
-      image_base64: base64Image,
+      base64_image: base64Image, // FIXED: Matches schemas.py
       timestamp: Date.now() / 1000.0,
-      source: "screen_mcp" // Added missing source key
+      source: "screen_mcp",
+      active_app: activeApp,
     };
 
     const controller = new AbortController();
