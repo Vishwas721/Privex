@@ -17,8 +17,8 @@ _session_factory: async_sessionmaker | None = None
 
 
 def _get_database_url() -> str:
-    # Use SQLite by default for zero-config local state
-    return os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./privex_state.db").strip()
+    # Changed fallback to Postgres to match local setup
+    return os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5432/privex").strip()
 
 
 def _row_hash(timestamp: datetime, event_type: str, details: dict[str, Any]) -> str:
@@ -39,11 +39,8 @@ async def init_db() -> None:
         return
 
     database_url = _get_database_url()
-    _engine = create_async_engine(
-        database_url,
-        # SQLite specific settings
-        connect_args={"check_same_thread": False}
-    )
+
+    _engine = create_async_engine(database_url)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
     create_table_sql = text(

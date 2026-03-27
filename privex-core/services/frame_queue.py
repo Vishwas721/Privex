@@ -19,15 +19,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENGINE_PATH = PROJECT_ROOT / "models" / "yolov8n.engine"
 
 # Must be configurable for Docker networking (e.g., http://privex-mcp:3000/api/alert)
-ALERT_ENDPOINT = os.getenv("ALERT_ENDPOINT", "http://localhost:3000/api/alert")
+ALERT_ENDPOINT = os.getenv("ALERT_ENDPOINT", "http://127.0.0.1:3000/api/alert")
 
 try:
-    if ENGINE_PATH.exists() and torch.cuda.is_available():
-        model = YOLO(str(ENGINE_PATH))
-        print(f"[frame-worker] loaded YOLO engine: {ENGINE_PATH}")
-    else:
-        print("[frame-worker] GPU/Engine unavailable. Falling back to CPU PyTorch model.")
-        model = YOLO("yolov8n.pt")
+    # FORCED NATIVE WINDOWS GPU FALLBACK
+    print("[frame-worker] Loading standard PyTorch model for native Windows...")
+    model = YOLO("yolov8n.pt")
+    
+    # This will explicitly prove it is using your RTX 4050!
+    print(f"[frame-worker] Model loaded successfully on device: {model.device}")
 except Exception as exc:
     model = None
     print(f"[frame-worker] FATAL: failed to load YOLO model: {exc}")
@@ -134,6 +134,6 @@ async def frame_worker_loop() -> None:
                         f"[frame-worker] alert POST failed status={response.status_code} body={response.text}"
                     )
             except Exception as exc:
-                print(f"[frame-worker] failed to send alert: {exc}")
+                print(f"[frame-worker] failed to send alert: {repr(exc)}")
         finally:
             frame_queue.task_done()

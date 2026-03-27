@@ -9,7 +9,7 @@ app.use(cors({ origin: 'http://localhost:5173' }));
 app.use(express.json());
 
 // 1. Initialize HTTP Server
-const server = app.listen(port, () => {
+const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Privex MCP server listening on port ${port}`);
 });
 
