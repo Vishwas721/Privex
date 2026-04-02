@@ -3,6 +3,7 @@ import base64
 from datetime import datetime, timezone
 from pathlib import Path
 import os
+import re
 import torch
 import cv2
 import httpx
@@ -12,6 +13,7 @@ from ultralytics import YOLO
 
 from core.database import log_event
 from core.schemas import FramePayload
+from core.graph import privex_app
 
 # Bounded queue to avoid unbounded memory growth if inference stalls.
 frame_queue: asyncio.Queue[FramePayload] = asyncio.Queue(maxsize=5)
@@ -30,6 +32,9 @@ try:
     # FORCED NATIVE WINDOWS GPU FALLBACK
     print("[frame-worker] Loading standard PyTorch model for native Windows...")
     model = YOLO("yolov8n.pt")
+    
+    # FORCE YOLO ONTO THE GPU
+    model.to("cuda")
     
     # This will explicitly prove it is using your RTX 4050!
     print(f"[frame-worker] Model loaded successfully on device: {model.device}")
@@ -79,19 +84,29 @@ def _extract_detected_classes(result: object) -> list[str]:
             detected.append(class_name)
     return detected
 
-
 def _sanitize_ocr_text(text: str) -> str:
     """
-    STUB: Pass text through Microsoft Presidio for NER redaction.
-    Replaces PII, API keys, and credit cards with <REDACTED> tokens.
+    Production-grade redaction using advanced Regex.
+    Catches variations of passwords, AWS keys, and generic secrets.
     """
     if not text:
         return ""
-    # TODO: Implement actual Presidio Analyzer/Anonymizer here.
-    # For now, if the text contains a mock secret, redact it to prove the pipeline works.
-    if "password" in text.lower():
-        return "<REDACTED_SECRET>"
-    return text
+    
+    redacted = text
+    
+    # 1. AWS Access Keys (Standard Format: AKIA followed by 16 alphanumeric characters)
+    redacted = re.sub(r'(?i)\b(AKIA[0-9A-Z]{16})\b', r'<REDACTED_AWS_ACCESS_KEY>', redacted)
+    
+    # 2. Generic Secret Keys (Catches "AWS Secret Key: xyz" or "Secret: xyz")
+    redacted = re.sub(r'(?i)((?:secret|access)[ _]?(?:key|token)?\s*(?:is|:|=|-)\s*)\S+', r'\1<REDACTED_SECRET>', redacted)
+    
+    # 3. Passwords (Catches "password is xyz", "Pass: xyz", "Password=xyz")
+    redacted = re.sub(r'(?i)(pass(?:word)?\s*(?:is|:|=|-)\s*)\S+', r'\1<REDACTED_PASSWORD>', redacted)
+    
+    # Clean up excessive OCR noise/newlines so it doesn't spam the UI
+    redacted = re.sub(r'\n+', ' | ', redacted).strip()
+    
+    return redacted
 
 
 def _run_ocr_sync(image: np.ndarray) -> str:
@@ -101,75 +116,100 @@ def _run_ocr_sync(image: np.ndarray) -> str:
 
 
 async def frame_worker_loop() -> None:
-    """Continuously consume and process queued frames."""
+    """Continuously consume and process queued frames with Targeted Cropping."""
     while True:
         payload = await frame_queue.get()
         try:
             if model is None:
-                print("[frame-worker] model unavailable, skipping frame")
                 continue
 
-            # Correct schema key from Task 1.4
             image = _decode_base64_image(payload.base64_image)
             if image is None:
-                print(f"[frame-worker] invalid frame payload timestamp={payload.timestamp}")
                 continue
+            
+            # 0. THE MIRROR BYPASS: Don't police the police!
+            active_app_title = ""
+            if payload.active_app and isinstance(payload.active_app, dict):
+               active_app_title = payload.active_app.get("title", "").lower()
 
-            # Thread-safe OCR and strict sanitization
-            sanitized_text = ""
+            if "privex-ui" in active_app_title or "localhost:5173" in active_app_title or "security console" in active_app_title:
+               continue  # Skip this frame entirely!
+
+            # 1. VISION FIRST: Let YOLO find the windows/objects
             try:
-                raw_text = await asyncio.to_thread(_run_ocr_sync, image)
-                sanitized_text = _sanitize_ocr_text(raw_text)
+                results = await asyncio.to_thread(model.predict, image, verbose=False)
             except Exception as exc:
-                print(f"[frame-worker] OCR failed timestamp={payload.timestamp}: {exc}")
-
-            try:
-                results = await asyncio.to_thread(
-                    model.predict,
-                    image,
-                    verbose=False,
-                )
-            except Exception as exc:
-                print(f"[frame-worker] inference failed timestamp={payload.timestamp}: {exc}")
+                print(f"[frame-worker] YOLO inference failed: {exc}")
                 continue
 
-            if not results:
-                continue
+            if not results or len(results[0].boxes) == 0:
+                continue # Nothing detected on screen, skip entirely.
 
             detected_classes = _extract_detected_classes(results[0])
-            if not detected_classes:
-                continue
 
-            try:
-                event_id = await log_event(
-                    "yolo_detection",
-                    {
-                        "detected": detected_classes,
-                        "ocr_text": sanitized_text,
-                        "source": payload.source,
-                        "frame_timestamp": payload.timestamp,
-                    },
-                )
+            # 2. TARGETED CROPPING: Only OCR the exact bounding boxes YOLO found
+            raw_text_chunks = []
+            boxes = results[0].boxes.xyxy.cpu().numpy() # Get coordinates: [x1, y1, x2, y2]
+            
+            for box in boxes:
+                x1, y1, x2, y2 = map(int, box)
+                # Crop the OpenCV image array to just the bounding box (with 5px padding)
+                h, w = image.shape[:2]
+                crop = image[max(0, y1-5):min(h, y2+5), max(0, x1-5):min(w, x2+5)]
+                
+                if crop.size > 0:
+                    text = await asyncio.to_thread(_run_ocr_sync, crop)
+                    if text.strip():
+                        raw_text_chunks.append(text.strip())
 
-                alert = {
-                    "id": event_id,
-                    "risk": "High",
+            # Combine the text from all the cropped boxes
+            combined_raw_text = " | ".join(raw_text_chunks)
+            
+            # 3. REDACT & FILTER
+            sanitized_text = _sanitize_ocr_text(combined_raw_text)
+
+            lower_text = sanitized_text.lower()
+            trigger_words = ["password", "api", "secret", "confidential", "private", ".env", "key"]
+            if not any(word in lower_text for word in trigger_words):
+                continue # Drop frame if no secrets found in the cropped areas
+            
+            # 4. LOG & ALERT (The rest remains exactly the same!)
+            event_id = await log_event(
+                "yolo_detection",
+                {
                     "detected": detected_classes,
                     "ocr_text": sanitized_text,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            except Exception as exc:
-                print(f"[frame-worker] failed to write audit log: {exc}")
-                continue
+                    "source": payload.source,
+                    "frame_timestamp": payload.timestamp,
+                },
+            )
 
-            try:
-                async with httpx.AsyncClient(timeout=3.0) as client:
-                    response = await client.post(ALERT_ENDPOINT, json=alert)
-                if response.status_code != 200:
-                    print(
-                        f"[frame-worker] alert POST failed status={response.status_code} body={response.text}"
-                    )
-            except Exception as exc:
-                print(f"[frame-worker] failed to send alert: {repr(exc)}")
+            alert = {
+                "id": event_id,
+                "risk": "High",
+                "detected": detected_classes,
+                "ocr_text": sanitized_text,
+                "active_app": getattr(payload, "active_app", None),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+            # Ask the Memory Agent before alerting
+            state = await asyncio.to_thread(privex_app.invoke, {
+                "user_query": sanitized_text,
+                "current_agent": "memory_agent",
+                "proposed_action": "",
+                "human_approval_required": True
+            })
+
+            if state.get("human_approval_required") is False:
+                print(f"\n🧠 [Memory Agent] Auto-approved recognized context. Suppressing alert!\n")
+                continue 
+
+            print(f"\n[🚀 OUTGOING ALERT] App: {alert.get('active_app')} | OCR: {alert.get('ocr_text')}\n")
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                await client.post(ALERT_ENDPOINT, json=alert)
+
+        except Exception as exc:
+            print(f"[frame-worker] loop error: {exc}")
         finally:
             frame_queue.task_done()

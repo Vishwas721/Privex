@@ -19,14 +19,22 @@ def get_llm():
     if os.getenv("USE_CLOUD_LLM", "false").lower() == "true":
         # Requires GROQ_API_KEY in environment
         return ChatGroq(model="llama3-8b-8192", temperature=0)
-    return ChatOllama(model="llama3:8b", temperature=0)
+    return ChatOllama(
+        base_url="http://127.0.0.1:11434", # FORCE THE IPV4 PORT
+        model="llama3:8b", 
+        temperature=0, 
+        format="json"
+    )
 
 
 _local_llm = get_llm()
 
-_embedding_model = OllamaEmbeddings(model=os.getenv("EMBEDDING_MODEL", "nomic-embed-text"))
+_embedding_model = OllamaEmbeddings(
+    base_url="http://127.0.0.1:11434", # FORCE THE IPV4 PORT
+    model=os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
+)
 _vector_store = None
-_vector_threshold = float(os.getenv("MEMORY_MATCH_THRESHOLD", "0.2"))
+_vector_threshold = float(os.getenv("MEMORY_MATCH_THRESHOLD", "0.4"))
 
 
 def _get_vector_store() -> Any:
@@ -76,7 +84,8 @@ def llm_router_node(state: AgentState) -> dict:
         response = _local_llm.invoke(prompt)
         payload = json.loads(response.content)
         agent = payload.get("current_agent", "memory_agent")
-    except Exception:
+    except Exception as e:
+        print(f"\n[🔴 LLM ROUTER ERROR] {e}\n") # <--- ADD THIS TO EXPOSE THE BUG
         agent = "memory_agent"
 
     if agent not in {"memory_agent", "phishing_agent"}:

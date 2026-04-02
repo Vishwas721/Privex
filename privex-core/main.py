@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from langchain_core.documents import Document
 
-from core.graph import privex_app, AgentState
+from core.graph import privex_app, AgentState, _get_vector_store
 from core.database import close_db, get_recent_logs, init_db, log_event
 from api.routes.vision import router as vision_router
 from services.frame_queue import frame_worker_loop
@@ -14,6 +15,13 @@ from services.frame_queue import frame_worker_loop
 
 class ChatQuery(BaseModel):
     query: str
+
+
+class ResolvePayload(BaseModel):
+    alert_id: str
+    decision: str
+    timestamp: float
+    ocr_text: str = ""
 
 
 # ✅ DEFINE FIRST
@@ -61,6 +69,22 @@ async def chat_endpoint(payload: ChatQuery):
 
     final_state = privex_app.invoke(initial_state)
     return final_state
+
+@app.post("/api/resolve-alert")
+async def resolve_alert(payload: ResolvePayload):
+    # 🧠 Teach the Memory Agent
+    if payload.decision == "approved" and payload.ocr_text:
+        vs = _get_vector_store()
+        if vs:
+            doc = Document(
+                page_content=payload.ocr_text,
+                metadata={"approved_action": "search_local_memory", "alert_id": payload.alert_id}
+            )
+            await asyncio.to_thread(vs.add_documents, [doc])
+            print(f"\n🧠 [Memory Agent] Learned new safe context from UI approval!\n")
+
+    return {"status": "success"}
+
 
 
 @app.get("/api/logs")

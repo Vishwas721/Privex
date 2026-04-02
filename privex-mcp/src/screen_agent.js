@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import activeWin from 'active-win';
+import { activeWindow } from 'active-win';
 import screenshot from 'screenshot-desktop';
 import sharp from 'sharp';
 
@@ -7,7 +7,6 @@ import sharp from 'sharp';
 const AI_CORE_URL = process.env.AI_CORE_URL; 
 const FRAME_INTERVAL_MS = 2000;
 const REQUEST_TIMEOUT_MS = 5000;
-
 if (!AI_CORE_URL) {
   console.error('AI_CORE_URL is not set. Screen agent will fail.');
 }
@@ -18,25 +17,23 @@ async function captureAndSendFrame() {
     const screenBuffer = await screenshot({ format: 'png' });
 
     // 2. Downscale (Visual Firewall constraint)
+    // 2. Downscale (Optimized for BOTH YOLO and OCR)
     const resizedBuffer = await sharp(screenBuffer)
-      .resize({
-        width: 640,
-        height: 640,
-        fit: 'contain',
-      })
-      .png()
+      .resize({ width: 1280 }) // Big enough for OCR to actually read the text
+      .jpeg({ quality: 70 })   // Compress the file size so it doesn't crash the API
       .toBuffer();
 
     const base64Image = resizedBuffer.toString('base64');
     console.log(`[MCP] Captured frame. Size: ${base64Image.length} bytes.`);
 
-    const activeWindow = await activeWin();
-    const activeApp = activeWindow
-      ? {
-          title: activeWindow.title || '',
-          owner: activeWindow.owner?.name || '',
-        }
-      : null;
+    const win = await activeWindow();
+
+    const activeApp = win
+     ? {
+         title: win.title || '',
+         owner: win.owner?.name || '',
+      }
+     : null;
 
     // 3. Construct the EXACT payload FastAPI expects
     const payload = {

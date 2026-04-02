@@ -44,6 +44,8 @@ function App() {
               (Array.isArray(data.detected) ? data.detected.join(', ') : undefined) ??
               'Unknown Threat',
             timestamp: data.timestamp ?? new Date().toISOString(),
+            ocrText: data.ocr_text || 'No text detected',
+            activeApp: data.active_app?.title || 'Unknown Application',
             raw: data,
           };
 
@@ -66,10 +68,12 @@ function App() {
   }, [socketState]);
 
   async function handleResolveAlert(alertId, decision) {
+    const targetAlert = alerts.find(a => a.id === alertId); // Find the specific alert
     const payload = {
       alert_id: alertId,
       decision,
       timestamp: Date.now() / 1000,
+      ocr_text: targetAlert?.ocrText || "" // Send the text back to Python!
     };
 
     try {

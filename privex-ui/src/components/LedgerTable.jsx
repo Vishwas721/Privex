@@ -82,6 +82,7 @@ export default function LedgerTable() {
               <tr className="text-xs uppercase tracking-wider text-slate-400">
                 <th className="px-3 py-2">Time</th>
                 <th className="px-3 py-2">Risk</th>
+                <th className="px-3 py-2">App</th>
                 <th className="px-3 py-2">Detected</th>
                 <th className="px-3 py-2">OCR Context</th>
               </tr>
@@ -91,6 +92,9 @@ export default function LedgerTable() {
                 <tr key={log.id || `${log.timestamp}-${formatDetected(log)}`}>
                   <td className="px-3 py-2 align-top text-slate-300">{formatTimestamp(log.timestamp)}</td>
                   <td className="px-3 py-2 align-top">{log.risk || 'High'}</td>
+                  <td className="max-w-40 truncate px-3 py-2 align-top text-slate-300" title={log.active_app?.title || 'Unknown'}>
+                    {log.active_app?.title || 'Unknown'}
+                  </td>
                   <td className="px-3 py-2 align-top">{formatDetected(log)}</td>
                   <td className="max-w-xs truncate px-3 py-2 align-top text-slate-300" title={log.ocr_text || ''}>
                     {log.ocr_text || '-'}

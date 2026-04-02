@@ -22,6 +22,13 @@ export default function AlertCard({ alert, onApprove, onBlock }) {
         🚨 ACTION REQUIRED: {alert.detectedItem}
       </h2>
 
+      <div className="mt-3 rounded bg-slate-950/50 p-3 text-sm text-slate-300">
+        <p><span className="font-semibold text-slate-400">App:</span> {alert.activeApp}</p>
+        <p className="mt-1 truncate" title={alert.ocrText}>
+          <span className="font-semibold text-slate-400">OCR:</span> {alert.ocrText}
+        </p>
+      </div>
+
       <div className="mt-5 flex flex-col gap-3 sm:flex-row">
         <button
           type="button"
