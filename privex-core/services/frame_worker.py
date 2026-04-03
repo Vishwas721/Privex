@@ -13,6 +13,7 @@ from os_integration.overlay import (
     _get_primary_screen_size,
     _scale_overlay_boxes,
 )
+from os_integration.meeting_hook import is_meeting_active
 from vision.engine import (
     INFERENCE_WIDTH,
     _contains_trigger_words,
@@ -44,6 +45,9 @@ else:
 
 async def enqueue_frame(payload: FramePayload) -> None:
     """Enqueue newest frame; drop oldest when queue is full for real-time behavior."""
+    if not is_meeting_active():
+        return
+
     if frame_queue.full():
         try:
             frame_queue.get_nowait()  # Aggressively drop oldest frame.
@@ -61,6 +65,11 @@ async def frame_worker_loop() -> None:
     while True:
         payload = await frame_queue.get()
         try:
+            if not is_meeting_active():
+                _overlay_manager.clear()
+                _tracker.tracks = []
+                continue
+
             if model is None:
                 _overlay_manager.clear()
                 continue
@@ -111,7 +120,7 @@ async def frame_worker_loop() -> None:
                 x1, y1, x2, y2 = map(int, box)
                 box_w = x2 - x1
                 box_h = y2 - y1
-                # 🛑 FIX 3: Change 0.75 to 0.95 to prevent accidental filtering of large Notepad windows!
+                # 🛑 FIX: Ignore large background windows (like VS Code). Only redact smaller floating windows (like Notepad).
                 if box_w > (inference_width * 0.95) or box_h > (inference_height * 0.95):
                     continue
 

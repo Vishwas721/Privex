@@ -13,7 +13,7 @@ class TrackManager:
     def __init__(self):
         self.tracks = []
         self.next_id = 0
-        self.MAX_AGE = 15     # Coast for 15 frames if OCR goes blind
+        self.MAX_AGE = 3      # Coast briefly if OCR goes blind
         self.MIN_HITS = 1     # 🛑 FIX 1: Instant activation! No waiting for consecutive frames.
         self.MATCH_DIST = 400 # 🛑 FIX 2: Huge distance tolerance so YOLO boxes don't lose tracking on 4K screens.
 
