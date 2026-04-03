@@ -1,4 +1,6 @@
 import asyncio
+import os
+import threading
 from pydantic import BaseModel
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -6,11 +8,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.documents import Document
+import uvicorn
 
 from core.graph import privex_app, AgentState, _get_vector_store
 from core.database import close_db, get_recent_logs, init_db, log_event
 from api.routes.vision import router as vision_router
 from services.frame_worker import frame_worker_loop
+from os_integration.tray import run_system_tray
 
 
 class ChatQuery(BaseModel):
@@ -94,3 +98,35 @@ async def get_logs_endpoint(limit: int = 50):
 
 
 app.include_router(vision_router)
+
+
+def _run_with_system_tray() -> None:
+    shutdown_event = threading.Event()
+    host = os.getenv("PRIVEX_HOST", "127.0.0.1")
+    port = int(os.getenv("PRIVEX_PORT", "8000"))
+
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(config)
+
+    def _server_thread_target() -> None:
+        server.run()
+        shutdown_event.set()
+
+    server_thread = threading.Thread(target=_server_thread_target, name="uvicorn-server", daemon=True)
+    server_thread.start()
+
+    def _request_shutdown() -> None:
+        shutdown_event.set()
+        server.should_exit = True
+
+    try:
+        print("🟢 Spawning System Tray Icon...") # <--- ADD THIS
+        run_system_tray(shutdown_event=shutdown_event, on_quit=_request_shutdown)
+    finally:
+        print("🔴 Shutting down system tray and server...") # <--- ADD THIS
+        _request_shutdown()
+        server_thread.join(timeout=10)
+
+
+if __name__ == "__main__":
+    _run_with_system_tray()
