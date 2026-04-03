@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 from core.graph import privex_app, AgentState, _get_vector_store
 from core.database import close_db, get_recent_logs, init_db, log_event
 from api.routes.vision import router as vision_router
-from services.frame_queue import frame_worker_loop
+from services.frame_worker import frame_worker_loop
 
 
 class ChatQuery(BaseModel):

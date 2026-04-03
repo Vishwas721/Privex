@@ -2,7 +2,7 @@ from fastapi import APIRouter, Response, status
 
 from core.database import log_event
 from core.schemas import AlertResolution, FramePayload
-from services.frame_queue import enqueue_frame
+from services.frame_worker import enqueue_frame
 
 router = APIRouter()
 
