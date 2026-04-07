@@ -13,7 +13,9 @@ class TrackManager:
     def __init__(self):
         self.tracks = []
         self.next_id = 0
-        self.MAX_AGE = 3      # Coast briefly if OCR goes blind
+        # 🛑 FIX: Increase to 8. Because the queue is fast now, 8 frames is only ~2 seconds of memory.
+        # It will survive Tesseract stutters but vanish quickly when you close Notepad!
+        self.MAX_AGE = 8      
         self.MIN_HITS = 1     # 🛑 FIX 1: Instant activation! No waiting for consecutive frames.
         self.MATCH_DIST = 400 # 🛑 FIX 2: Huge distance tolerance so YOLO boxes don't lose tracking on 4K screens.
 

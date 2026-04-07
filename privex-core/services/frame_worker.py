@@ -26,8 +26,8 @@ from vision.engine import (
 from vision.tracker import TrackManager
 
 
-# Bounded queue to avoid unbounded memory growth if inference stalls.
-frame_queue: asyncio.Queue[FramePayload] = asyncio.Queue(maxsize=5)
+# 🛑 FIX: Change maxsize to 1. This forces real-time processing and kills the 10-second delay!
+frame_queue: asyncio.Queue[FramePayload] = asyncio.Queue(maxsize=1)
 
 # Must be configurable for Docker networking (e.g., http://privex-mcp:3000/api/alert)
 ALERT_ENDPOINT = os.getenv("ALERT_ENDPOINT", "http://127.0.0.1:3000/api/alert")
