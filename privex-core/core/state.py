@@ -1,4 +1,4 @@
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class AgentState(TypedDict):
@@ -9,3 +9,4 @@ class AgentState(TypedDict):
     proposed_action: str
     risk_level: str
     human_approval_required: bool
+    response: NotRequired[str]

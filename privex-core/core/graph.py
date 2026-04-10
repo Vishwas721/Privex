@@ -8,6 +8,7 @@ try:
 except Exception:
     from langchain_community.chat_models import ChatOllama
 from langchain_community.embeddings import OllamaEmbeddings
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from langgraph.graph import END, StateGraph
 
@@ -25,12 +26,23 @@ class RouteDecision(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
-llm = ChatOllama(
-    base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-    model="qwen2.5:1.5b",
-    temperature=0.0,
-    format="json",
-)
+def get_llm(temperature: float = 0.0, is_json: bool = False):
+    if os.getenv("USE_CLOUD_LLM", "false").lower() == "true":
+        from langchain_groq import ChatGroq
+        # Groq fallback for CPU developers
+        return ChatGroq(model="llama3-8b-8192", temperature=temperature)
+
+    # Local Edge Inference
+    return ChatOllama(
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+        model="qwen2.5:1.5b",
+        temperature=temperature,
+        format="json" if is_json else None,
+    )
+
+
+# Use it for the router
+llm = get_llm(temperature=0.0, is_json=True)
 
 _embedding_model = OllamaEmbeddings(
     base_url="http://127.0.0.1:11434", # FORCE THE IPV4 PORT
@@ -105,41 +117,59 @@ def route_query(state: AgentState) -> dict:
         return {"current_agent": "firewall_agent"}
 
 
-def memory_agent_node(state: AgentState) -> AgentState:
-    user_query = state.get("user_query", "")
-    next_state: AgentState = {
-        "proposed_action": "search_local_memory",
-    }
-
-    if not user_query:
-        return next_state
+def memory_agent_node(state: AgentState) -> dict:
+    query = state.get("user_query", "")
 
     vector_store = _get_vector_store()
     if vector_store is None:
-        return next_state
+        return {
+            "response": "My memory database is currently offline.",
+            "human_approval_required": False,
+        }
 
     try:
-        # score is expected to be a distance where lower means more similar.
-        matches = vector_store.similarity_search_with_score(user_query, k=1)
+        docs = vector_store.similarity_search(query, k=5)
     except Exception:
-        return next_state
+        return {
+            "response": "My memory database is currently offline.",
+            "human_approval_required": False,
+        }
 
-    if not matches:
-        return next_state
+    if not docs:
+        return {
+            "response": "I don't have any memories matching that request yet.",
+            "human_approval_required": False,
+        }
 
-    doc, score = matches[0]
+    formatted_context = "\n".join(
+        f"[App: {(getattr(doc, 'metadata', {}) or {}).get('active_app')}] - {getattr(doc, 'page_content', '')}"
+        for doc in docs
+    )
+
+    # 1. Use the fallback-aware LLM for conversation
+    chat_llm = get_llm(temperature=0.3, is_json=False)
+
+    system_text = (
+        "You are Privex, a privacy-first AI assistant. Answer the user's question using ONLY the provided "
+        "memory context. Do not invent information. If the answer is not in the context, explicitly state "
+        "that you do not have a memory of it."
+        f"\n\nMemory Context:\n{formatted_context}"
+    )
+
     try:
-        distance = float(score)
+        response = chat_llm.invoke([
+            SystemMessage(content=system_text),
+            HumanMessage(content=query),
+        ])
+        return {
+            "response": response.content,
+            "proposed_action": "search_local_memory", # Let the deterministic Risk Engine handle the boolean!
+        }
     except Exception:
-        return next_state
-
-    if distance < _vector_threshold:
-        metadata = getattr(doc, "metadata", {}) or {}
-        approved_action = metadata.get("approved_action", "search_local_memory")
-        next_state["proposed_action"] = approved_action
-        next_state["human_approval_required"] = False
-
-    return next_state
+        return {
+            "response": "I couldn't read memory context right now. Please try again.",
+            "proposed_action": "search_local_memory",
+        }
 
 
 def firewall_agent_node(state: AgentState) -> dict:
