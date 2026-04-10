@@ -105,7 +105,7 @@ def _run_with_system_tray() -> None:
     host = os.getenv("PRIVEX_HOST", "127.0.0.1")
     port = int(os.getenv("PRIVEX_PORT", "8000"))
 
-    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    config = uvicorn.Config(app, host=host, port=port, log_level="info", access_log=False)
     server = uvicorn.Server(config)
 
     def _server_thread_target() -> None:

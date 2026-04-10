@@ -5,7 +5,7 @@ import sharp from 'sharp';
 
 // The .env should be: AI_CORE_URL=http://localhost:8000/api/analyze-frame
 const AI_CORE_URL = process.env.AI_CORE_URL; 
-const FRAME_INTERVAL_MS = 2000;
+const FRAME_INTERVAL_MS = 200;
 const REQUEST_TIMEOUT_MS = 5000;
 if (!AI_CORE_URL) {
   console.error('AI_CORE_URL is not set. Screen agent will fail.');
@@ -24,6 +24,7 @@ async function captureAndSendFrame() {
       .toBuffer();
 
     const base64Image = resizedBuffer.toString('base64');
+    console.log(`Captured frame at ${Date.now() / 1000}`);
     console.log(`[MCP] Captured frame. Size: ${base64Image.length} bytes.`);
 
     const win = await activeWindow();
@@ -56,6 +57,7 @@ async function captureAndSendFrame() {
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
+      console.log("[MCP-Agent] Frame successfully delivered to Core.");
 
       if (!response.ok) {
         console.error(`[MCP-ERROR] Frame POST failed: ${response.status}`);

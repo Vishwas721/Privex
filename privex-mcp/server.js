@@ -66,6 +66,7 @@ wss.on('connection', (ws) => {
 
 // 3. REST endpoint for Python Core -> Express IPC
 app.post('/api/alert', (req, res) => {
+  console.log("[MCP-Server] 🚨 ALERT RECEIVED FROM PYTHON CORE:", req.body);
   console.log('Received alert from Python Core:', req.body);
   
   // 4. Broadcast alert to the React UI

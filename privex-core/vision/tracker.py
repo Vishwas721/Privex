@@ -28,8 +28,10 @@ class TrackManager:
             track['time_since_update'] += 1
             if track['time_since_update'] > self.MAX_AGE:
                 track['state'] = TrackState.DELETED
+                print(f"[Tracker] Track {track['id']} DELETED.")
             elif track['state'] == TrackState.ACTIVE and track['time_since_update'] > 0:
                 track['state'] = TrackState.LOST
+                print(f"[Tracker] Track {track['id']} is LOST (Coasting).")
 
         # 2. Match
         unmatched_bboxes = list(new_bboxes)
@@ -56,8 +58,10 @@ class TrackManager:
 
                 if track['state'] == TrackState.TENTATIVE and track['hits'] >= self.MIN_HITS:
                     track['state'] = TrackState.ACTIVE
+                    print(f"[Tracker] Track {track['id']} became ACTIVE!")
                 elif track['state'] == TrackState.LOST:
                     track['state'] = TrackState.ACTIVE
+                    print(f"[Tracker] Track {track['id']} became ACTIVE!")
 
         # 3. Spawn (Instantly active if MIN_HITS is 1)
         for bbox in unmatched_bboxes:
@@ -68,6 +72,8 @@ class TrackManager:
                 'hits': 1,
                 'time_since_update': 0
             })
+            if self.MIN_HITS <= 1:
+                print(f"[Tracker] Track {self.next_id} became ACTIVE!")
             self.next_id += 1
 
         self.tracks = [t for t in self.tracks if t['state'] != TrackState.DELETED]

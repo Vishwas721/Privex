@@ -2,20 +2,16 @@ import base64
 from pathlib import Path
 import os
 import re
+import time
 import torch
 import cv2
 import numpy as np
-import pytesseract
+import easyocr
 from ultralytics import YOLO
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENGINE_PATH = PROJECT_ROOT / "models" / "yolov8n.engine"
-
-TESSERACT_CMD = os.getenv("TESSERACT_CMD", "").strip()
-
-if TESSERACT_CMD:
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 TRIGGER_WORDS = ["password", "api", "secret", "confidential", "private", ".env", "key"]
 
@@ -28,18 +24,30 @@ def _contains_trigger_words(text: str) -> bool:
 
 
 try:
-    # FORCED NATIVE WINDOWS GPU FALLBACK
     print("[frame-worker] Loading standard PyTorch model for native Windows...")
     model = YOLO("yolov8n.pt")
 
-    # FORCE YOLO ONTO THE GPU
-    model.to("cuda")
+    # SAFE HARDWARE ROUTING
+    if torch.cuda.is_available():
+        model.to("cuda")
+        print(f"[frame-worker] YOLO loaded successfully on GPU: {model.device}")
+    else:
+        print("[frame-worker] CUDA unavailable, keeping YOLO on CPU.")
 
-    # This will explicitly prove it is using your RTX 4050!
-    print(f"[frame-worker] Model loaded successfully on device: {model.device}")
 except Exception as exc:
     model = None
     print(f"[frame-worker] FATAL: failed to load YOLO model: {exc}")
+
+
+try:
+    # 🛑 FIX 1: Load the faster, first-generation recognition network
+    use_gpu = torch.cuda.is_available()
+    print(f"[frame-worker] Initializing EasyOCR reader. GPU acceleration requested: {use_gpu}")
+    ocr_reader = easyocr.Reader(['en'], gpu=use_gpu, recog_network='latin_g1')
+    print(f"[frame-worker] EasyOCR reader loaded successfully. GPU active: {use_gpu}")
+except Exception as exc:
+    ocr_reader = None
+    print(f"[frame-worker] FATAL: failed to load EasyOCR reader: {exc}")
 
 
 def _decode_base64_image(image_base64: str) -> np.ndarray | None:
@@ -51,6 +59,14 @@ def _decode_base64_image(image_base64: str) -> np.ndarray | None:
         return image
     except Exception:
         return None
+
+
+def _predict_yolo_sync(image: np.ndarray):
+    if model is None:
+        return []
+    # 🛑 NEW: Use built-in ByteTrack to assign consistent IDs to windows across frames
+    results = model.track(image, persist=True, verbose=False, tracker="bytetrack.yaml")
+    return results
 
 
 def _extract_detected_classes(result: object) -> list[str]:
@@ -93,10 +109,32 @@ def _sanitize_ocr_text(text: str) -> str:
     # Clean up excessive OCR noise/newlines so it doesn't spam the UI
     redacted = re.sub(r'\n+', ' | ', redacted).strip()
 
+    if any(word in redacted.lower() for word in TRIGGER_WORDS):
+        print(f"[Regex] Trigger word matched in: {redacted}")
+
     return redacted
 
 
 def _run_ocr_sync(image: np.ndarray) -> str:
-    """Synchronous OCR task to be run in a separate thread."""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    return pytesseract.image_to_string(gray).strip()
+    """Synchronous OCR task to be run in a separate thread using EasyOCR."""
+    if ocr_reader is None:
+        return ""
+    start = time.time()
+    try:
+        # 🛑 FIX 2: Force Greedy Decoding and restrict the character set!
+        results = ocr_reader.readtext(
+            image,
+            detail=0,
+            decoder='greedy',
+            paragraph=False,
+            batch_size=16,
+            allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_/='
+        )
+        text = " ".join(results).strip()
+        print(f"[OCR] Extracted: {text}")
+        return text
+    except Exception as exc:
+        print(f"[frame-worker] OCR error: {exc}")
+        return ""
+    finally:
+        print(f"[OCR TIMING] {time.time() - start} seconds")
