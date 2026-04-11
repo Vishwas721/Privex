@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 :root {
@@ -7,6 +8,13 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: #020617;
-  font-family: "Inter", "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background:
+    radial-gradient(circle at 14% 18%, rgba(56, 189, 248, 0.12), transparent 34%),
+    radial-gradient(circle at 85% 0%, rgba(99, 102, 241, 0.14), transparent 36%),
+    #020617;
+  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+}
+
+#root {
+  min-height: 100vh;
 }
