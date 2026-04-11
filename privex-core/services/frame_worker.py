@@ -8,6 +8,7 @@ import httpx
 import numpy as np
 
 from core.database import log_event
+from core.ingestion import process_and_store_memory
 from core.schemas import FramePayload
 from core.graph import privex_app
 from os_integration.overlay import (
@@ -39,12 +40,19 @@ ALERT_ENDPOINT = os.getenv("ALERT_ENDPOINT", "http://127.0.0.1:3000/api/alert")
 # Initialize the global tracker
 _tracker = TrackManager()
 _window_cache: dict[int, str] = {}  # Maps YOLO Track ID -> "SAFE", "SECRET", or "PENDING"
+_window_ocr_cache: dict[int, str] = {}
+_last_ingest_time: dict[int, float] = {}
+_INGEST_INTERVAL_SECONDS = 8.0
 
 
 async def _background_ocr_task(track_id: int, crop: np.ndarray):
     """Runs EasyOCR entirely in the background without blocking the main loop."""
     text = await asyncio.to_thread(_run_ocr_sync, crop)
     sanitized = _sanitize_ocr_text(text)
+
+    # 🛑 FIX: Cache the SANITIZED text, never the raw text!
+    _window_ocr_cache[track_id] = sanitized
+
     if _contains_trigger_words(sanitized):
         print(f"\n🚨 [BACKGROUND OCR] Found secret in Track ID {track_id}! Flagging for redaction.")
         _window_cache[track_id] = "SECRET"
@@ -85,7 +93,7 @@ async def enqueue_frame(payload: FramePayload) -> None:
 
 async def frame_worker_loop() -> None:
     """Continuously consume and process queued frames with Targeted Cropping."""
-    global _window_cache
+    global _window_cache, _window_ocr_cache, _last_ingest_time
 
     while True:
         payload = await frame_queue.get()
@@ -160,6 +168,17 @@ async def frame_worker_loop() -> None:
                         secret_boxes.append((x1, y1, x2, y2))
                         continue
                     elif status in ("SAFE", "PENDING"):
+                        if status == "SAFE":
+                            now = time.time()
+                            last_ingest = _last_ingest_time.get(track_id, 0.0)
+                            if now - last_ingest >= _INGEST_INTERVAL_SECONDS:
+                                crop_text = _window_ocr_cache.get(track_id, "")
+                                if crop_text:
+                                    active_app = ""
+                                    if payload.active_app and isinstance(payload.active_app, dict):
+                                        active_app = (payload.active_app.get("title", "") or "").strip().lower()
+                                    _last_ingest_time[track_id] = now
+                                    asyncio.create_task(process_and_store_memory(crop_text, active_app))
                         continue
 
                     # If we reach here, it's a brand new window!
