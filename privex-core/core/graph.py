@@ -1,23 +1,17 @@
 import json
 import os
 from typing import Literal
-from typing import Any
 
 try:
     from langchain_ollama import ChatOllama
 except Exception:
     from langchain_community.chat_models import ChatOllama
-from langchain_community.embeddings import OllamaEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from langgraph.graph import END, StateGraph
 
-try:
-    from langchain_postgres import PGVector
-except Exception:
-    PGVector = None
-
 from core.state import AgentState
+from core.vector_store import get_vector_store as _get_vector_store
 
 
 class RouteDecision(BaseModel):
@@ -43,44 +37,6 @@ def get_llm(temperature: float = 0.0, is_json: bool = False):
 
 # Use it for the router
 llm = get_llm(temperature=0.0, is_json=True)
-
-_embedding_model = OllamaEmbeddings(
-    base_url="http://127.0.0.1:11434", # FORCE THE IPV4 PORT
-    model=os.getenv("EMBEDDING_MODEL", "nomic-embed-text")
-)
-_vector_store = None
-_vector_threshold = float(os.getenv("MEMORY_MATCH_THRESHOLD", "0.4"))
-
-
-def _get_vector_store() -> Any:
-    global _vector_store
-
-    if _vector_store is not None:
-        return _vector_store
-
-    if PGVector is None:
-        return None
-
-    connection = os.getenv(
-        "PGVECTOR_CONNECTION",
-        os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:password@localhost:5432/privex"),
-    )
-    if "+asyncpg" in connection:
-        connection = connection.replace("+asyncpg", "+psycopg")
-
-    collection_name = os.getenv("PGVECTOR_COLLECTION", "approved_actions")
-
-    try:
-        _vector_store = PGVector(
-            embeddings=_embedding_model,
-            collection_name=collection_name,
-            connection=connection,
-            use_jsonb=True,
-        )
-    except Exception:
-        _vector_store = None
-
-    return _vector_store
 
 
 def route_query(state: AgentState) -> dict:

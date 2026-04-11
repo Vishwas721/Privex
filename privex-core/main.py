@@ -10,8 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.documents import Document
 import uvicorn
 
-from core.graph import privex_app, AgentState, _get_vector_store
+from core.graph import privex_app, AgentState
 from core.database import close_db, get_recent_logs, init_db, log_event
+from core.vector_store import init_vector_store, get_vector_store
 from api.routes.vision import router as vision_router
 from services.frame_worker import frame_worker_loop
 from os_integration.tray import run_system_tray
@@ -32,6 +33,7 @@ class ResolvePayload(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
+    await init_vector_store()
     try:
         await log_event("system_boot", {"message": "System Boot"})
     except Exception as exc:
@@ -78,7 +80,7 @@ async def chat_endpoint(payload: ChatQuery):
 async def resolve_alert(payload: ResolvePayload):
     # 🧠 Teach the Memory Agent
     if payload.decision == "approved" and payload.ocr_text:
-        vs = _get_vector_store()
+        vs = get_vector_store()
         if vs:
             doc = Document(
                 page_content=payload.ocr_text,
