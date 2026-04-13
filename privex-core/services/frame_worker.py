@@ -41,7 +41,8 @@ ALERT_ENDPOINT = os.getenv("ALERT_ENDPOINT", "http://127.0.0.1:3000/api/alert")
 _tracker = TrackManager()
 _window_cache: dict[int, str] = {}  # Maps YOLO Track ID -> "SAFE", "SECRET", or "PENDING"
 _window_ocr_cache: dict[int, str] = {}
-_last_ingest_time: dict[int, float] = {}
+_last_ingest_time: dict[str, float] = {}
+_last_track_ingest_time: dict[int, float] = {}
 _INGEST_INTERVAL_SECONDS = 8.0
 
 
@@ -93,7 +94,7 @@ async def enqueue_frame(payload: FramePayload) -> None:
 
 async def frame_worker_loop() -> None:
     """Continuously consume and process queued frames with Targeted Cropping."""
-    global _window_cache, _window_ocr_cache, _last_ingest_time
+    global _window_cache, _window_ocr_cache, _last_ingest_time, _last_track_ingest_time
 
     while True:
         payload = await frame_queue.get()
@@ -170,14 +171,14 @@ async def frame_worker_loop() -> None:
                     elif status in ("SAFE", "PENDING"):
                         if status == "SAFE":
                             now = time.time()
-                            last_ingest = _last_ingest_time.get(track_id, 0.0)
+                            last_ingest = _last_track_ingest_time.get(track_id, 0.0)
                             if now - last_ingest >= _INGEST_INTERVAL_SECONDS:
                                 crop_text = _window_ocr_cache.get(track_id, "")
                                 if crop_text:
                                     active_app = ""
                                     if payload.active_app and isinstance(payload.active_app, dict):
                                         active_app = (payload.active_app.get("title", "") or "").strip().lower()
-                                    _last_ingest_time[track_id] = now
+                                    _last_track_ingest_time[track_id] = now
                                     asyncio.create_task(process_and_store_memory(crop_text, active_app))
                         continue
 
@@ -205,6 +206,16 @@ async def frame_worker_loop() -> None:
                     _overlay_manager.clear()
                 else:
                     _overlay_manager.set_boxes(stable_boxes)
+
+                # 🧠 NEW: Trigger the Memory Ingestion Pipeline for SAFE frames!
+                active_app_name = payload.active_app.get('title', 'Unknown') if isinstance(payload.active_app, dict) else 'Unknown'
+                now = time.time()
+                # Only ingest once every 10 seconds per app to save CPU/GPU!
+                if now - _last_ingest_time.get(active_app_name, 0) > 10.0:
+                    _last_ingest_time[active_app_name] = now
+                    # Fire and forget! Don't block the tracking loop.
+                    asyncio.create_task(process_and_store_memory(sanitized_text, active_app_name))
+
                 continue # Drop frame if no secrets found to avoid spamming alerts
 
             # 4. LOG & ALERT

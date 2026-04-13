@@ -13,6 +13,7 @@ import uvicorn
 from core.graph import privex_app, AgentState
 from core.database import close_db, get_recent_logs, init_db, log_event
 from core.vector_store import init_vector_store, get_vector_store
+from core.maintenance import sleep_cycle_loop
 from api.routes.vision import router as vision_router
 from services.frame_worker import frame_worker_loop
 from os_integration.tray import run_system_tray
@@ -40,12 +41,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         print(f"[startup] failed to write system boot audit event: {exc}")
 
     worker_task = asyncio.create_task(frame_worker_loop(), name="frame-worker-loop")
+    sleep_cycle_task = asyncio.create_task(sleep_cycle_loop(), name="sleep-cycle")
     try:
         yield
     finally:
         worker_task.cancel()
+        sleep_cycle_task.cancel()
         try:
             await worker_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await sleep_cycle_task
         except asyncio.CancelledError:
             pass
         await close_db()
