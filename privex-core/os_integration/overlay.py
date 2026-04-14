@@ -39,7 +39,9 @@ class WindowsRedactionOverlayManager:
     def set_boxes(self, boxes: list[tuple[int, int, int, int]]) -> None:
         if not self._started:
             return
-        print(f"[Overlay] Received command to draw {len(boxes)} boxes.")
+        # Only print if we are actually receiving boxes to draw!
+        if len(boxes) > 0:
+            print(f"[Overlay] Received command to draw {len(boxes)} boxes.")
         self._commands.put(("set", boxes))
 
     def clear(self) -> None:
@@ -90,8 +92,10 @@ class WindowsRedactionOverlayManager:
             current_boxes: list[tuple[int, int, int, int]] = []
 
             def redraw() -> None:
-                print(f"[Overlay] Redrawing Canvas with {len(current_boxes)} rectangles.")
                 canvas.delete("all")
+                # Only print if we are actually drawing something!
+                if len(current_boxes) > 0:
+                    print(f"[Overlay] Redrawing Canvas with {len(current_boxes)} rectangles.")
                 for x1, y1, x2, y2 in current_boxes:
                     canvas.create_rectangle(x1, y1, x2, y2, fill="black", outline="black")
 

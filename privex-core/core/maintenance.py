@@ -12,16 +12,16 @@ from langchain_community.chat_models import ChatOllama
 from langchain_core.documents import Document
 from sqlalchemy import text
 
+from core import database
 from core.vector_store import get_vector_store
-from core.database import _session_factory
 
 
 async def _get_db_connection():
     """Get a raw database connection from the session factory."""
-    if _session_factory is None:
+    if database._session_factory is None:
         raise RuntimeError("Database not initialized. Call init_db() before running maintenance tasks.")
     
-    async with _session_factory() as session:
+    async with database._session_factory() as session:
         return session.connection()
 
 
@@ -30,7 +30,7 @@ async def _fetch_recent_memories(hours: int = 24) -> list[dict[str, Any]]:
     Fetch all memory documents from the PGVector store created in the past N hours.
     Returns list of dicts with 'content' and 'metadata' keys.
     """
-    if _session_factory is None:
+    if database._session_factory is None:
         raise RuntimeError("Database not initialized.")
     
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -39,21 +39,21 @@ async def _fetch_recent_memories(hours: int = 24) -> list[dict[str, Any]]:
     # Query the PGVector vector store table directly
     query_sql = text(
         """
-        SELECT document, metadata
+           SELECT document, cmetadata
         FROM langchain_pg_embedding
         WHERE collection_id = (
             SELECT uuid FROM langchain_pg_collection 
             WHERE name = 'screen_memories'
         )
-        AND (metadata->>'timestamp' IS NULL 
-             OR metadata->>'timestamp' > :cutoff_time)
-        AND (metadata->>'type' IS NULL 
-             OR metadata->>'type' != 'daily_summary')
-        ORDER BY embedding_id DESC;
+           AND (cmetadata->>'timestamp' IS NULL 
+               OR cmetadata->>'timestamp' > :cutoff_time)
+           AND (cmetadata->>'type' IS NULL 
+               OR cmetadata->>'type' != 'daily_summary')
+        ORDER BY id DESC; 
         """
     )
     
-    async with _session_factory() as session:
+    async with database._session_factory() as session:
         conn = await session.connection()
         result = await conn.execute(query_sql, {"cutoff_time": cutoff_iso})
         rows = result.fetchall()
@@ -61,7 +61,7 @@ async def _fetch_recent_memories(hours: int = 24) -> list[dict[str, Any]]:
     return [
         {
             "content": row.document if hasattr(row, "document") else row[0],
-            "metadata": row.metadata if hasattr(row, "metadata") else row[1],
+            "metadata": row.cmetadata if hasattr(row, "cmetadata") else row[1],
         }
         for row in rows
     ]
@@ -72,7 +72,7 @@ async def _delete_old_memories(hours: int = 24) -> int:
     Delete all micro-memories from the past N hours (excluding daily_summary type).
     Returns the count of deleted records.
     """
-    if _session_factory is None:
+    if database._session_factory is None:
         raise RuntimeError("Database not initialized.")
     
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -85,14 +85,14 @@ async def _delete_old_memories(hours: int = 24) -> int:
             SELECT uuid FROM langchain_pg_collection 
             WHERE name = 'screen_memories'
         )
-        AND (metadata->>'timestamp' IS NULL 
-             OR metadata->>'timestamp' > :cutoff_time)
-        AND (metadata->>'type' IS NULL 
-             OR metadata->>'type' != 'daily_summary');
+           AND (cmetadata->>'timestamp' IS NULL 
+               OR cmetadata->>'timestamp' > :cutoff_time)
+           AND (cmetadata->>'type' IS NULL 
+               OR cmetadata->>'type' != 'daily_summary');
         """
     )
     
-    async with _session_factory() as session:
+    async with database._session_factory() as session:
         result = await session.execute(delete_sql, {"cutoff_time": cutoff_iso})
         await session.commit()
         return result.rowcount

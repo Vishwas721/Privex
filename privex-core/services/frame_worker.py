@@ -41,7 +41,6 @@ ALERT_ENDPOINT = os.getenv("ALERT_ENDPOINT", "http://127.0.0.1:3000/api/alert")
 _tracker = TrackManager()
 _window_cache: dict[int, str] = {}  # Maps YOLO Track ID -> "SAFE", "SECRET", or "PENDING"
 _window_ocr_cache: dict[int, str] = {}
-_last_ingest_time: dict[str, float] = {}
 _last_track_ingest_time: dict[int, float] = {}
 _INGEST_INTERVAL_SECONDS = 8.0
 
@@ -70,17 +69,6 @@ else:
 
 async def enqueue_frame(payload: FramePayload) -> None:
     """Enqueue newest frame; drop oldest when queue is full for real-time behavior."""
-    if not is_meeting_active():
-        _overlay_manager.clear()
-        _tracker.tracks = []
-        while not frame_queue.empty():
-            try:
-                frame_queue.get_nowait()
-                frame_queue.task_done()
-            except asyncio.QueueEmpty:
-                pass
-        return
-
     if frame_queue.full():
         try:
             frame_queue.get_nowait()  # Aggressively drop oldest frame.
@@ -94,16 +82,13 @@ async def enqueue_frame(payload: FramePayload) -> None:
 
 async def frame_worker_loop() -> None:
     """Continuously consume and process queued frames with Targeted Cropping."""
-    global _window_cache, _window_ocr_cache, _last_ingest_time, _last_track_ingest_time
+    global _window_cache, _window_ocr_cache, _last_track_ingest_time
 
     while True:
         payload = await frame_queue.get()
         try:
-            print(f"[frame-worker] Received frame at {time.time()}")
-            if not is_meeting_active():
-                _overlay_manager.clear()
-                _tracker.tracks = []
-                continue
+            # 📥 TRACER: Log frame intake
+            print(f"📥 [Worker] Pulled frame from queue. Active App: {payload.active_app}")
 
             if model is None:
                 _overlay_manager.clear()
@@ -135,7 +120,7 @@ async def frame_worker_loop() -> None:
             if not results or len(results[0].boxes) == 0:
                 # Let the tracker coast briefly instead of instantly clearing overlays.
                 stable_boxes = _tracker.update_tracks([])
-                if not stable_boxes:
+                if not stable_boxes or not is_meeting_active(): # 🛡️ ENFORCED!
                     _overlay_manager.clear()
                 else:
                     _overlay_manager.set_boxes(stable_boxes)
@@ -157,9 +142,6 @@ async def frame_worker_loop() -> None:
                 x1, y1, x2, y2 = map(int, box)
                 box_w = x2 - x1
                 box_h = y2 - y1
-                # 🛑 FIX: Ignore large background windows (like VS Code). Only redact smaller floating windows (like Notepad).
-                if box_w > (inference_width * 0.95) or box_h > (inference_height * 0.95):
-                    continue
 
                 # 🛑 NEW: Async Cache Logic
                 track_id = int(track_ids[i]) if i < len(track_ids) else -1
@@ -173,13 +155,25 @@ async def frame_worker_loop() -> None:
                             now = time.time()
                             last_ingest = _last_track_ingest_time.get(track_id, 0.0)
                             if now - last_ingest >= _INGEST_INTERVAL_SECONDS:
+                                # ⏱️ TRACER: 8-second throttle for this track reached
+                                print(f"⏱️ [Worker] SAFE window tracking interval reached for Track ID {track_id}")
                                 crop_text = _window_ocr_cache.get(track_id, "")
-                                if crop_text:
+                                
+                                # 🛑 NEW DEBUG PRINT: See what EasyOCR actually reads!
+                                print(f"👁️ [OCR DEBUG] App: {payload.active_app.get('title', 'Unknown') if isinstance(payload.active_app, dict) else 'Unknown'} | Extracted Text: {repr(crop_text)}")
+                                
+                                if crop_text.strip(): # Ensured it's not just spaces
                                     active_app = ""
                                     if payload.active_app and isinstance(payload.active_app, dict):
                                         active_app = (payload.active_app.get("title", "") or "").strip().lower()
                                     _last_track_ingest_time[track_id] = now
+                                    
+                                    # 🚀 TRACER: Fire ingestion task
+                                    print(f"🚀 [Worker] Firing process_and_store_memory for app: {active_app} with text length: {len(crop_text)}")
                                     asyncio.create_task(process_and_store_memory(crop_text, active_app))
+                                    
+                                    # 🛑 NEW: Reset the window to PENDING so we read the fresh text if the user scrolled!
+                                    _window_cache[track_id] = "PENDING"
                         continue
 
                     # If we reach here, it's a brand new window!
@@ -188,8 +182,8 @@ async def frame_worker_loop() -> None:
                     h_img, w_img = image.shape[:2]
                     crop = image[max(0, y1-5):min(h_img, y2+5), max(0, x1-5):min(w_img, x2+5)]
 
-                    # Resize massive crops to protect VRAM
-                    max_dim = 600
+                    # Resize massive crops to protect VRAM (INCREASED TO 1200 for OCR readability)
+                    max_dim = 1200
                     if (x2-x1) > max_dim or (y2-y1) > max_dim:
                         scale = max_dim / max(x2-x1, y2-y1)
                         crop = cv2.resize(crop, (0, 0), fx=scale, fy=scale)
@@ -202,20 +196,10 @@ async def frame_worker_loop() -> None:
             if not secret_boxes:
                 # Update tracker with empty list so old boxes can "coast" in LOST state
                 stable_boxes = _tracker.update_tracks([])
-                if not stable_boxes:
+                if not stable_boxes or not is_meeting_active(): # 🛡️ ENFORCED!
                     _overlay_manager.clear()
                 else:
                     _overlay_manager.set_boxes(stable_boxes)
-
-                # 🧠 NEW: Trigger the Memory Ingestion Pipeline for SAFE frames!
-                active_app_name = payload.active_app.get('title', 'Unknown') if isinstance(payload.active_app, dict) else 'Unknown'
-                now = time.time()
-                # Only ingest once every 10 seconds per app to save CPU/GPU!
-                if now - _last_ingest_time.get(active_app_name, 0) > 10.0:
-                    _last_ingest_time[active_app_name] = now
-                    # Fire and forget! Don't block the tracking loop.
-                    asyncio.create_task(process_and_store_memory(sanitized_text, active_app_name))
-
                 continue # Drop frame if no secrets found to avoid spamming alerts
 
             # 4. LOG & ALERT
@@ -265,11 +249,15 @@ async def frame_worker_loop() -> None:
             stable_boxes = _tracker.update_tracks(scaled_secret_boxes)
             print(f"[Worker] Tracker returned {len(stable_boxes)} stable boxes to draw.")
 
-            # Send the smoothed, stateful boxes to the GUI
-            if not stable_boxes:
+            # 🛡️ THE BRILLIANT COMPROMISE:
+            if not is_meeting_active():
                 _overlay_manager.clear()
+                print("[Worker] Secret detected, but Shield is OFF (No active meeting).")
             else:
-                _overlay_manager.set_boxes(stable_boxes)
+                if not stable_boxes:
+                    _overlay_manager.clear()
+                else:
+                    _overlay_manager.set_boxes(stable_boxes)
 
             print(f"\n[🚀 OUTGOING ALERT] App: {alert.get('active_app')} | OCR: {alert.get('ocr_text')}\n")
             async with httpx.AsyncClient(timeout=3.0) as client:

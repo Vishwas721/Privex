@@ -15,12 +15,6 @@ import {
 import AlertCard from './components/AlertCard';
 import LedgerTable from './components/LedgerTable';
 
-const recentAlerts = [
-  { id: 'a-1', title: 'AWS Key Redacted - Notepad', severity: 'critical' },
-  { id: 'a-2', title: 'API Token Hidden - Discord', severity: 'warning' },
-  { id: 'a-3', title: 'Card Number Blocked - Browser', severity: 'warning' },
-];
-
 function statusDot(colorClass) {
   return <Circle className={`h-2.5 w-2.5 fill-current ${colorClass}`} />;
 }
@@ -40,24 +34,9 @@ function App() {
   const [socketState, setSocketState] = useState('connecting');
   const [messages, setMessages] = useState([
     {
-      id: 'm-1',
+      id: 'm-start',
       role: 'assistant',
-      text: 'Visual Firewall is active. I am monitoring clipboard and on-screen text for sensitive data leakage.',
-      sources: [
-        { app: 'VS Code', time: '14:30' },
-        { app: 'Notepad', time: '14:29' },
-      ],
-    },
-    {
-      id: 'm-2',
-      role: 'user',
-      text: 'Summarize anything blocked in the last five minutes.',
-    },
-    {
-      id: 'm-3',
-      role: 'assistant',
-      text: 'Three events were blocked. One exposed AWS key, one API token, and one probable card number. All redactions were successful.',
-      sources: [{ app: 'Privex Vision Engine', time: '14:31' }],
+      text: 'My memory banks and vision sensors are active. What would you like to know about your recent activity?',
     },
   ]);
   const [input, setInput] = useState('');
@@ -157,9 +136,33 @@ function App() {
   }
 
   async function sendMessage(text) {
-    // Stub: replace this with fetch('http://localhost:8000/api/chat', ...) integration.
-    await new Promise((resolve) => setTimeout(resolve, 450));
-    return createAssistantResponse(text);
+    try {
+      const response = await fetch(`${coreApiUrl}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query: text }),
+      });
+
+      if (!response.ok) throw new Error('Network response was not ok');
+      const data = await response.json();
+
+      return {
+        id: `m-${Date.now()}`,
+        role: 'assistant',
+        // The backend LangGraph returns the answer inside 'response'
+        text: data.response || 'I am having trouble connecting to my memory bank.',
+        sources: data.sources || [],
+      };
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      return {
+        id: `m-${Date.now()}`,
+        role: 'assistant',
+        text: 'Error: Could not reach the Privex Core API.',
+      };
+    }
   }
 
   async function handleSend(event) {
@@ -262,18 +265,19 @@ function App() {
           <section>
             <h2 className="mb-3 text-xs uppercase tracking-[0.18em] text-slate-400">Recent Alerts</h2>
             <div className="space-y-2">
-              {recentAlerts.map((alert) => (
+              {alerts.length === 0 && (
+                 <p className="text-xs text-slate-500 italic">No recent alerts</p>
+              )}
+              {alerts.slice(0, 5).map((alert) => (
                 <article
-                  key={alert.id}
+                  key={`sidebar-${alert.id}`}
                   className="rounded-xl border border-slate-800 bg-slate-900/70 p-3 backdrop-blur"
                 >
                   <div className="flex items-start gap-2">
-                    <AlertTriangle
-                      className={`mt-0.5 h-4 w-4 ${
-                        alert.severity === 'critical' ? 'text-rose-400' : 'text-orange-400'
-                      }`}
-                    />
-                    <p className="text-xs leading-relaxed text-slate-300">{alert.title}</p>
+                    <AlertTriangle className="mt-0.5 h-4 w-4 text-orange-400" />
+                    <p className="text-xs leading-relaxed text-slate-300">
+                      {alert.detectedItem} - {alert.activeApp}
+                    </p>
                   </div>
                 </article>
               ))}

@@ -2,10 +2,7 @@ import json
 import os
 from typing import Literal
 
-try:
-    from langchain_ollama import ChatOllama
-except Exception:
-    from langchain_community.chat_models import ChatOllama
+from langchain_community.chat_models import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from langgraph.graph import END, StateGraph

@@ -32,6 +32,10 @@ async def process_and_store_memory(ocr_text: str, active_app: str) -> None:
     try:
         ocr_text = (ocr_text or "").strip()
         active_app = (active_app or "").strip()
+        
+        # ⚙️ TRACER: Log entry point with parameters
+        print(f"⚙️ [Ingestion] Received request for {active_app}. Text length: {len(ocr_text)}")
+        
         if not ocr_text:
             return
 
@@ -44,10 +48,15 @@ async def process_and_store_memory(ocr_text: str, active_app: str) -> None:
 
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         new_summary = (getattr(response, "content", response) or "").strip()
+        
+        # 🛑 ADDED PRINT: See when it ignores useless screens
         if new_summary == "NOISE" or not new_summary:
+            print(f"🙈 [Ingestion] Ignored noise in app: {active_app}")
             return
 
+        # 🛑 ADDED PRINT: See the deduplication engine working
         if _last_saved_memory.get(active_app) == new_summary:
+            print(f"♻️ [Ingestion] Deduplicated identical screen in: {active_app}")
             return
 
         _last_saved_memory[active_app] = new_summary
@@ -56,6 +65,9 @@ async def process_and_store_memory(ocr_text: str, active_app: str) -> None:
         if vs is None:
             print("[ingestion] vector store unavailable; skipping memory save.")
             return
+        else:
+            # 🔌 TRACER: Confirm vector store connection
+            print(f"🔌 [Ingestion] Vector store connection confirmed. Saving document...")
 
         doc = Document(
             page_content=new_summary,
@@ -65,5 +77,8 @@ async def process_and_store_memory(ocr_text: str, active_app: str) -> None:
             },
         )
         await asyncio.to_thread(vs.add_documents, [doc])
+        
+        # 🛑 ADDED PRINT: The Success Log!
+        print(f"\n🧠 [Ingestion] SAVED NEW MEMORY: {new_summary}\n")
     except Exception as exc:
         print(f"[ingestion] memory ingestion error: {exc}")
