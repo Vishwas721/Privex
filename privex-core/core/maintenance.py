@@ -13,6 +13,7 @@ from langchain_core.documents import Document
 from sqlalchemy import text
 
 from core import database
+from core.graph_store import get_graph_store
 from core.vector_store import get_vector_store
 
 
@@ -177,6 +178,11 @@ SUMMARY:"""
         # 7. Delete old micro-memories
         deleted_count = await _delete_old_memories(hours=24)
         print(f"🗑️ [Sleep Cycle] Purged {deleted_count} old micro-memories.")
+
+        # 8. Run GraphRAG Entity Resolution
+        _ = get_graph_store()
+        from core.graph_store import run_wcc_deduplication
+        await asyncio.to_thread(run_wcc_deduplication)
         
         print("🌙 [Sleep Cycle] Memory consolidation complete!\n")
         return True

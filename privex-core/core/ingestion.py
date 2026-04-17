@@ -1,11 +1,15 @@
 import asyncio
+import json
 import os
+import re
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from langchain_community.chat_models import ChatOllama
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 
+from core.graph_store import get_graph_store
 from core.vector_store import get_vector_store
 
 
@@ -25,6 +29,44 @@ def get_ingestion_llm():
 
 llm = get_ingestion_llm()
 
+
+def _parse_graph_json(raw_content: str) -> dict:
+    content = (raw_content or "").strip()
+    if not content:
+        return {"applications": [], "secrets": [], "dates": []}
+
+    try:
+        payload = json.loads(content)
+    except Exception:
+        match = re.search(r"\{[\s\S]*\}", content)
+        if not match:
+            return {"applications": [], "secrets": [], "dates": []}
+        try:
+            payload = json.loads(match.group(0))
+        except Exception:
+            return {"applications": [], "secrets": [], "dates": []}
+
+    applications = payload.get("applications") if isinstance(payload, dict) else []
+    secrets = payload.get("secrets") if isinstance(payload, dict) else []
+    dates = payload.get("dates") if isinstance(payload, dict) else []
+
+    if not isinstance(applications, list):
+        applications = []
+    if not isinstance(secrets, list):
+        secrets = []
+    if not isinstance(dates, list):
+        dates = []
+
+    normalized_apps = [str(item).strip() for item in applications if str(item).strip()]
+    normalized_dates = [str(item).strip() for item in dates if str(item).strip()]
+    normalized_secrets = [str(item).strip() for item in secrets if str(item).strip()]
+
+    return {
+        "applications": normalized_apps,
+        "secrets": normalized_secrets,
+        "dates": normalized_dates,
+    }
+
 _last_saved_memory: dict[str, str] = {}
 
 
@@ -32,10 +74,7 @@ async def process_and_store_memory(ocr_text: str, active_app: str) -> None:
     try:
         ocr_text = (ocr_text or "").strip()
         active_app = (active_app or "").strip()
-        
-        # ⚙️ TRACER: Log entry point with parameters
-        print(f"⚙️ [Ingestion] Received request for {active_app}. Text length: {len(ocr_text)}")
-        
+
         if not ocr_text:
             return
 
@@ -65,9 +104,6 @@ async def process_and_store_memory(ocr_text: str, active_app: str) -> None:
         if vs is None:
             print("[ingestion] vector store unavailable; skipping memory save.")
             return
-        else:
-            # 🔌 TRACER: Confirm vector store connection
-            print(f"🔌 [Ingestion] Vector store connection confirmed. Saving document...")
 
         doc = Document(
             page_content=new_summary,
@@ -77,8 +113,63 @@ async def process_and_store_memory(ocr_text: str, active_app: str) -> None:
             },
         )
         await asyncio.to_thread(vs.add_documents, [doc])
-        
-        # 🛑 ADDED PRINT: The Success Log!
-        print(f"\n🧠 [Ingestion] SAVED NEW MEMORY: {new_summary}\n")
+
+        # GraphRAG extraction path (additive to PGVector, never blocking the main pipeline)
+        try:
+            graph_store = get_graph_store()
+            if graph_store is not None:
+                graph_prompt = (
+                    "Use the schema in docs/GRAPH_SCHEMA.md. "
+                    f"Extract graph entities from this summary: {new_summary}. "
+                    "Output valid JSON with 'applications', 'secrets', and 'dates'. "
+                    "Each value must be an array of strings. "
+                    "RULE: When extracting the 'secret' field, ONLY extract literal cryptographic keys, passwords, or API tokens. "
+                    "If none exist in the text, you MUST output EXACTLY the word 'Unknown'. "
+                    "Do NOT invent descriptions like 'YouTube Secret' or 'Hotstar Secret'."
+                )
+                graph_response = await llm.ainvoke([HumanMessage(content=graph_prompt)])
+                graph_json_raw = getattr(graph_response, "content", graph_response)
+                entities = _parse_graph_json(str(graph_json_raw))
+
+                applications = entities.get("applications", [])
+                secrets = entities.get("secrets", [])
+                dates = entities.get("dates", [])
+
+                if active_app and active_app not in applications:
+                    applications.append(active_app)
+                if not dates:
+                    dates.append(datetime.now(timezone.utc).date().isoformat())
+
+                cypher = """
+                MERGE (evt:Alert {id: $alert_id})
+                SET evt.timestamp = $timestamp,
+                    evt.risk_level = $risk_level,
+                    evt.summary = $summary
+                WITH evt
+                UNWIND $applications AS app_name
+                MERGE (a:Application {name: app_name})
+                MERGE (evt)-[:OCCURRED_IN]->(a)
+                WITH evt
+                UNWIND $secrets AS secret_type
+                MERGE (s:Secret {type: secret_type, redacted_preview: ''})
+                MERGE (evt)-[:EXPOSED]->(s)
+                WITH evt
+                UNWIND $dates AS date_value
+                MERGE (d:Date {date: date_value})
+                MERGE (evt)-[:HAPPENED_ON]->(d)
+                """
+
+                params = {
+                    "alert_id": f"mem-{uuid4()}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "risk_level": "High",
+                    "summary": new_summary,
+                    "applications": applications,
+                    "secrets": secrets,
+                    "dates": dates,
+                }
+                await asyncio.to_thread(graph_store.query, cypher, params)
+        except Exception as graph_exc:
+            print(f"[GraphRAG] Non-fatal graph ingestion error: {graph_exc}")
     except Exception as exc:
         print(f"[ingestion] memory ingestion error: {exc}")

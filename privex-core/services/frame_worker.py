@@ -54,7 +54,6 @@ async def _background_ocr_task(track_id: int, crop: np.ndarray):
     _window_ocr_cache[track_id] = sanitized
 
     if _contains_trigger_words(sanitized):
-        print(f"\n🚨 [BACKGROUND OCR] Found secret in Track ID {track_id}! Flagging for redaction.")
         _window_cache[track_id] = "SECRET"
     else:
         _window_cache[track_id] = "SAFE"
@@ -87,9 +86,6 @@ async def frame_worker_loop() -> None:
     while True:
         payload = await frame_queue.get()
         try:
-            # 📥 TRACER: Log frame intake
-            print(f"📥 [Worker] Pulled frame from queue. Active App: {payload.active_app}")
-
             if model is None:
                 _overlay_manager.clear()
                 continue
@@ -124,6 +120,25 @@ async def frame_worker_loop() -> None:
                     _overlay_manager.clear()
                 else:
                     _overlay_manager.set_boxes(stable_boxes)
+
+                # Fallback: Full screen OCR if YOLO found nothing, to ensure Memory Agent is fed
+                now = time.time()
+                last_ingest = _last_track_ingest_time.get(-1, 0.0)  # Use -1 as the "Full Screen" track ID
+                if now - last_ingest >= _INGEST_INTERVAL_SECONDS:
+                    print(f"👁️ [Fallback] YOLO found nothing. Running full-screen OCR...")
+                    _last_track_ingest_time[-1] = now
+                    # Run OCR in background on the full image
+                    asyncio.create_task(_background_ocr_task(-1, image))
+
+                    # If it was previously marked SECRET, feed it!
+                    if _window_cache.get(-1) == "SECRET":
+                        crop_text = _window_ocr_cache.get(-1, "")
+                        if crop_text.strip():
+                            active_app = ""
+                            if payload.active_app and isinstance(payload.active_app, dict):
+                                active_app = (payload.active_app.get("title", "") or "").strip().lower()
+                            asyncio.create_task(process_and_store_memory(crop_text, active_app))
+                            _window_cache[-1] = "PENDING"
                 continue
 
             detected_classes = _extract_detected_classes(results[0])
@@ -149,6 +164,20 @@ async def frame_worker_loop() -> None:
                     status = _window_cache.get(track_id)
                     if status == "SECRET":
                         secret_boxes.append((x1, y1, x2, y2))
+                        
+                        # 🧠 NEW: We must ALSO ingest secrets so the Graph Database can map them!
+                        now = time.time()
+                        last_ingest = _last_track_ingest_time.get(track_id, 0.0)
+                        if now - last_ingest >= _INGEST_INTERVAL_SECONDS:
+                            crop_text = _window_ocr_cache.get(track_id, "")
+                            if crop_text.strip():
+                                active_app = ""
+                                if payload.active_app and isinstance(payload.active_app, dict):
+                                    active_app = (payload.active_app.get("title", "") or "").strip().lower()
+                                _last_track_ingest_time[track_id] = now
+                                print(f"🚀 [Worker] Firing GraphRAG ingestion for SECRET in app: {active_app}")
+                                asyncio.create_task(process_and_store_memory(crop_text, active_app))
+                                _window_cache[track_id] = "PENDING" # Reset to read new text if user scrolls
                         continue
                     elif status in ("SAFE", "PENDING"):
                         if status == "SAFE":
@@ -190,7 +219,6 @@ async def frame_worker_loop() -> None:
 
                     asyncio.create_task(_background_ocr_task(track_id, crop))
 
-            print(f"[Worker] Total secret boxes found: {len(secret_boxes)}")
             sanitized_text = ""
 
             if not secret_boxes:
@@ -247,7 +275,6 @@ async def frame_worker_loop() -> None:
 
             # 🧠 NEW: Pass the raw boxes through the State Machine
             stable_boxes = _tracker.update_tracks(scaled_secret_boxes)
-            print(f"[Worker] Tracker returned {len(stable_boxes)} stable boxes to draw.")
 
             # 🛡️ THE BRILLIANT COMPROMISE:
             if not is_meeting_active():
