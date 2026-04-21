@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 import os
+import re
 import time
 
 import cv2
@@ -43,12 +44,32 @@ _window_cache: dict[int, str] = {}  # Maps YOLO Track ID -> "SAFE", "SECRET", or
 _window_ocr_cache: dict[int, str] = {}
 _last_track_ingest_time: dict[int, float] = {}
 _INGEST_INTERVAL_SECONDS = 8.0
+url_pattern = re.compile(r'(https?://\S+|www[.\-]\S+|\S+\.(?:com|org|net|info|io|co)|\S+updatecom)', re.IGNORECASE)
 
 
-async def _background_ocr_task(track_id: int, crop: np.ndarray):
+async def _trigger_phishing_analysis(extracted_text: str) -> None:
+    try:
+        response_state = await asyncio.to_thread(
+            privex_app.invoke,
+            {
+                "user_query": f"Analyze this text for phishing: {extracted_text}",
+                "current_agent": "phishing_agent",
+                "proposed_action": "",
+                "human_approval_required": False,
+            },
+        )
+        response_text = str(response_state.get("response", ""))
+        if "🚨 **PHISHING ALERT** 🚨" in response_text:
+            print("\033[91m🚨 [FIREWALL] MALICIOUS LINK DETECTED ON SCREEN! 🚨\033[0m")
+    except Exception as exc:
+        print(f"[frame-worker] phishing analysis failed: {exc}")
+
+
+async def _background_ocr_task(track_id: int, crop: np.ndarray, app_name: str = ""):
     """Runs EasyOCR entirely in the background without blocking the main loop."""
     text = await asyncio.to_thread(_run_ocr_sync, crop)
     sanitized = _sanitize_ocr_text(text)
+    text_to_scan = f"{app_name} {sanitized}"
 
     # 🛑 FIX: Cache the SANITIZED text, never the raw text!
     _window_ocr_cache[track_id] = sanitized
@@ -57,6 +78,27 @@ async def _background_ocr_task(track_id: int, crop: np.ndarray):
         _window_cache[track_id] = "SECRET"
     else:
         _window_cache[track_id] = "SAFE"
+
+    if url_pattern.search(text_to_scan):
+        print(f"🔗 https://minecraft.fandom.com/wiki/Sniffer Suspicious link format detected! Triggering Threat Analysis...")
+
+        # 4. Trigger the graph
+        try:
+            # Make sure 'graph' or 'workflow' is imported and compiled in this file
+            result = await asyncio.to_thread(
+                privex_app.invoke,
+                {"user_query": f"Analyze this text for phishing: {text_to_scan}"},
+            )
+            response_text = result.get("response", "")
+
+            if "🚨 **PHISHING ALERT** 🚨" in response_text:
+                print("\n" + "=" * 50)
+                print("🚨 [FIREWALL] MALICIOUS LINK DETECTED ON SCREEN! 🚨")
+                print("=" * 50 + "\n")
+                print(response_text)  # Print the LLM's explanation
+
+        except Exception as e:
+            print(f"❌ https://minecraft.fandom.com/wiki/Sniffer Failed to trigger phishing agent: {e}")
 
 
 if os.name == "nt":
@@ -128,13 +170,13 @@ async def frame_worker_loop() -> None:
                     print(f"👁️ [Fallback] YOLO found nothing. Running full-screen OCR...")
                     _last_track_ingest_time[-1] = now
                     # Run OCR in background on the full image
-                    asyncio.create_task(_background_ocr_task(-1, image))
+                    asyncio.create_task(_background_ocr_task(-1, image, active_app_title))
 
                     # If it was previously marked SECRET, feed it!
                     if _window_cache.get(-1) == "SECRET":
                         crop_text = _window_ocr_cache.get(-1, "")
                         if crop_text.strip():
-                            active_app = ""
+                            active_app = active_app_title
                             if payload.active_app and isinstance(payload.active_app, dict):
                                 active_app = (payload.active_app.get("title", "") or "").strip().lower()
                             asyncio.create_task(process_and_store_memory(crop_text, active_app))
@@ -217,7 +259,7 @@ async def frame_worker_loop() -> None:
                         scale = max_dim / max(x2-x1, y2-y1)
                         crop = cv2.resize(crop, (0, 0), fx=scale, fy=scale)
 
-                    asyncio.create_task(_background_ocr_task(track_id, crop))
+                    asyncio.create_task(_background_ocr_task(track_id, crop, active_app_title))
 
             sanitized_text = ""
 

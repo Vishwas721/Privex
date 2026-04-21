@@ -36,6 +36,7 @@ def get_llm(temperature: float = 0.0, is_json: bool = False):
 
 # Use it for the router
 llm = get_llm(temperature=0.0, is_json=True)
+chat_llm = get_llm(temperature=0.3, is_json=False)
 
 
 def route_query(state: AgentState) -> dict:
@@ -137,9 +138,6 @@ def memory_agent_node(state: AgentState) -> dict:
     print(formatted_context)
     print("🚨 ----------------------------------------- 🚨\n")
 
-    # 1. Use the fallback-aware LLM for conversation
-    chat_llm = get_llm(temperature=0.3, is_json=False)
-
     system_text = (
         "You are Privex, a highly precise, privacy-first AI. Answer the user's question using ONLY the Memory Context below.\n"
         "RULE 1: A 'secret' strictly refers to specific cryptographic keys or credentials (e.g., AWS Key, Database Password, GitHub Token).\n"
@@ -172,7 +170,81 @@ def firewall_agent_node(state: AgentState) -> dict:
 
 
 def phishing_agent_node(state: AgentState) -> dict:
-    return {"proposed_action": "send_external_email"}
+    user_query = (state.get("user_query", "") or "").strip()
+    if not user_query:
+        return {
+            "response": "✅ **SAFE** - No phishing or social engineering threats detected.",
+            "proposed_action": "answer_general_chat",
+        }
+
+    system_text = (
+        "You are a cybersecurity threat analyst for Privex. Analyze on-screen text for phishing and social engineering tactics. "
+        "Look for these exact triggers: (1) False Urgency (e.g., 'Act immediately', 'Account suspended'), "
+        "(2) Fake Authority (e.g., impersonating banks, IT support), and (3) Suspicious URLs "
+        "(e.g., typosquatting, strange domains). "
+        "Return ONLY valid JSON with keys: threat_detected (boolean), triggers (array of strings), analysis (one sentence)."
+    )
+
+    threat_detected = False
+    triggers: list[str] = []
+    analysis = "Potential social engineering indicators detected."
+
+    try:
+        response = chat_llm.invoke([
+            SystemMessage(content=system_text),
+            HumanMessage(content=user_query),
+        ])
+        content = getattr(response, "content", response)
+        if isinstance(content, list):
+            content = "".join(str(part) for part in content)
+
+        payload_text = str(content).strip()
+        try:
+            payload = json.loads(payload_text)
+        except Exception:
+            match = re.search(r"\{[\s\S]*\}", payload_text)
+            payload = json.loads(match.group(0)) if match else {}
+
+        threat_detected = bool(payload.get("threat_detected", False))
+        raw_triggers = payload.get("triggers", [])
+        if isinstance(raw_triggers, list):
+            triggers = [str(t).strip() for t in raw_triggers if str(t).strip()]
+        raw_analysis = str(payload.get("analysis", "")).strip()
+        if raw_analysis:
+            analysis = raw_analysis
+    except Exception as exc:
+        print(f"❌ [Phishing Agent] LLM analysis failed: {exc}")
+        lowered = user_query.lower()
+        heuristic_triggers = []
+        if any(token in lowered for token in ["act immediately", "urgent", "account suspended", "verify now", "immediately"]):
+            heuristic_triggers.append("False Urgency")
+        if any(token in lowered for token in ["bank", "it support", "security team", "microsoft support", "admin"]):
+            heuristic_triggers.append("Fake Authority")
+        if any(token in lowered for token in ["http://", "https://", ".ru", "bit.ly", "tinyurl", "login-"]):
+            heuristic_triggers.append("Suspicious URLs")
+
+        if heuristic_triggers:
+            threat_detected = True
+            triggers = heuristic_triggers
+            analysis = "The text contains high-confidence phishing cues including urgency, impersonation, or suspicious link patterns."
+
+    if threat_detected:
+        if not triggers:
+            triggers = ["False Urgency"]
+        return {
+            "response": (
+                "🚨 **PHISHING ALERT** 🚨\n"
+                "**Threat Level:** HIGH\n"
+                f"**Triggers Found:** {', '.join(triggers)}\n"
+                f"**Analysis:** {analysis}"
+            ),
+            "proposed_action": "send_external_email",
+        }
+
+    return {
+        "response": "✅ **SAFE** - No phishing or social engineering threats detected.",
+        "proposed_action": "answer_general_chat",
+    }
 
 
 def general_chat_node(state: AgentState) -> dict:
