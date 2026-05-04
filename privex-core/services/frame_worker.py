@@ -43,8 +43,22 @@ _tracker = TrackManager()
 _window_cache: dict[int, str] = {}  # Maps YOLO Track ID -> "SAFE", "SECRET", or "PENDING"
 _window_ocr_cache: dict[int, str] = {}
 _last_track_ingest_time: dict[int, float] = {}
-_INGEST_INTERVAL_SECONDS = 8.0
+_INGEST_INTERVAL_SECONDS = 30.0 # Stop spamming EasyOCR!
 url_pattern = re.compile(r'(https?://\S+|www[.\-]\S+|\S+\.(?:com|org|net|info|io|co)|\S+updatecom)', re.IGNORECASE)
+
+
+def _show_windows_toast_sync() -> None:
+    from win10toast import ToastNotifier
+
+    print("🔔 [Python] Triggering Windows Toast Notification...")
+    toaster = ToastNotifier()
+    # threaded=True is CRITICAL so it doesn't freeze your background worker!
+    toaster.show_toast(
+        "🚨 Privex Firewall",
+        "Phishing domain detected! Do not enter credentials.",
+        duration=7,
+        threaded=True,
+    )
 
 
 async def _trigger_phishing_analysis(extracted_text: str) -> None:
@@ -96,6 +110,27 @@ async def _background_ocr_task(track_id: int, crop: np.ndarray, app_name: str = 
                 print("🚨 [FIREWALL] MALICIOUS LINK DETECTED ON SCREEN! 🚨")
                 print("=" * 50 + "\n")
                 print(response_text)  # Print the LLM's explanation
+
+                # 1. Send to React UI (Via Node.js server)
+                try:
+                    payload = {"response": response_text}
+                    print(f"📦 [Python] Sending payload to Node server...")
+
+                    # 👇 THIS IS THE MAGIC BULLET: Port 3000 👇
+                    async with httpx.AsyncClient(timeout=2.0) as client:
+                        res = await client.post(
+                            "http://127.0.0.1:3000/api/chat/broadcast",
+                            json=payload
+                        )
+                    print(f"✅ [Python] Node Server replied: {res.status_code}")
+                except Exception as e:
+                    print(f"⚠️ [Python] Broadcast failed: {e}")
+
+                # 2. Trigger Windows OS Notification (Bulletproof Windows version)
+                try:
+                    await asyncio.to_thread(_show_windows_toast_sync)
+                except Exception as e:
+                    print(f"❌ [Python] Failed to trigger Windows notification: {e}")
 
         except Exception as e:
             print(f"❌ https://minecraft.fandom.com/wiki/Sniffer Failed to trigger phishing agent: {e}")
@@ -156,31 +191,36 @@ async def frame_worker_loop() -> None:
                 continue
 
             if not results or len(results[0].boxes) == 0:
-                # Let the tracker coast briefly instead of instantly clearing overlays.
+                # 1. Handle the UI Overlay
                 stable_boxes = _tracker.update_tracks([])
-                if not stable_boxes or not is_meeting_active(): # 🛡️ ENFORCED!
+                if not stable_boxes or not is_meeting_active():
                     _overlay_manager.clear()
                 else:
                     _overlay_manager.set_boxes(stable_boxes)
 
-                # Fallback: Full screen OCR if YOLO found nothing, to ensure Memory Agent is fed
-                now = time.time()
-                last_ingest = _last_track_ingest_time.get(-1, 0.0)  # Use -1 as the "Full Screen" track ID
-                if now - last_ingest >= _INGEST_INTERVAL_SECONDS:
-                    print(f"👁️ [Fallback] YOLO found nothing. Running full-screen OCR...")
-                    _last_track_ingest_time[-1] = now
-                    # Run OCR in background on the full image
-                    asyncio.create_task(_background_ocr_task(-1, image, active_app_title))
+                # 👇 2. THE HYBRID ARCHITECTURE 👇
+                if not is_meeting_active():
+                    now = time.time()
+                    last_ingest = _last_track_ingest_time.get(-1, 0.0)
 
-                    # If it was previously marked SECRET, feed it!
-                    if _window_cache.get(-1) == "SECRET":
-                        crop_text = _window_ocr_cache.get(-1, "")
-                        if crop_text.strip():
-                            active_app = active_app_title
-                            if payload.active_app and isinstance(payload.active_app, dict):
-                                active_app = (payload.active_app.get("title", "") or "").strip().lower()
-                            asyncio.create_task(process_and_store_memory(crop_text, active_app))
-                            _window_cache[-1] = "PENDING"
+                    # Throttle full-screen OCR to once every 15 seconds to prevent GPU locking
+                    if now - last_ingest >= 15.0:
+                        print(f"👁️ [Sponge Mode] Meeting is OFF. Running full-screen background OCR...")
+                        _last_track_ingest_time[-1] = now
+
+                        # Run the heavy extraction in the background
+                        asyncio.create_task(_background_ocr_task(-1, image, active_app_title))
+
+                        # Ingest into LangGraph Memory
+                        if _window_cache.get(-1) == "SECRET":
+                            crop_text = _window_ocr_cache.get(-1, "")
+                            if crop_text.strip():
+                                active_app = active_app_title
+                                if payload.active_app and isinstance(payload.active_app, dict):
+                                    active_app = (payload.active_app.get("title", "") or "").strip().lower()
+
+                                asyncio.create_task(process_and_store_memory(crop_text, active_app))
+                                _window_cache[-1] = "PENDING"
                 continue
 
             detected_classes = _extract_detected_classes(results[0])
@@ -292,7 +332,34 @@ async def frame_worker_loop() -> None:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
 
-            # Ask the Memory Agent before alerting
+            # 👇 1. DRAW THE SHIELDS FIRST (Zero AI Latency) 👇
+            scaled_secret_boxes = _scale_overlay_boxes(
+                secret_boxes,
+                screen_width=screen_width,
+                screen_height=screen_height,
+                inference_width=inference_width,
+                inference_height=inference_height,
+            )
+
+            stable_boxes = _tracker.update_tracks(scaled_secret_boxes)
+            meeting_status = is_meeting_active()
+
+            # 👇 INJECT THIS TRACER 👇
+            print(f"🛡️ [Shield Debug] Secret Boxes: {len(secret_boxes)} | Stable Boxes: {len(stable_boxes)} | Meeting Active: {meeting_status}")
+
+            if not meeting_status:
+                _overlay_manager.clear()
+                print("🛡️ [Shield Debug] Action: Cleared (Meeting OFF)")
+            else:
+                if not stable_boxes:
+                    _overlay_manager.clear()
+                    print("🛡️ [Shield Debug] Action: Cleared (No Stable Boxes)")
+                else:
+                    _overlay_manager.set_boxes(stable_boxes)
+                    print(f"🛡️ [Shield Debug] Action: DRAWING {len(stable_boxes)} BOXES!")
+
+
+            # 👇 2. THEN ASK THE MEMORY AGENT ABOUT REACT ALERTS 👇
             print("[Worker] ⏳ Calling LangGraph Memory Agent...")
             state = await asyncio.to_thread(privex_app.invoke, {
                 "user_query": sanitized_text,
@@ -303,30 +370,10 @@ async def frame_worker_loop() -> None:
             print(f"[Worker] ✅ LangGraph Returned: {state.get('human_approval_required')}")
 
             if state.get("human_approval_required") is False:
-                _overlay_manager.clear()
-                print(f"\n🧠 [Memory Agent] Auto-approved recognized context. Suppressing alert!\n")
+                # 🛑 WE DELETED _overlay_manager.clear() FROM HERE!
+                # Let the black boxes stay on screen to protect the stream!
+                print(f"\n🧠 [Memory Agent] Auto-approved recognized context. Suppressing UI alert!\n")
                 continue
-
-            scaled_secret_boxes = _scale_overlay_boxes(
-                secret_boxes,
-                screen_width=screen_width,
-                screen_height=screen_height,
-                inference_width=inference_width,
-                inference_height=inference_height,
-            )
-
-            # 🧠 NEW: Pass the raw boxes through the State Machine
-            stable_boxes = _tracker.update_tracks(scaled_secret_boxes)
-
-            # 🛡️ THE BRILLIANT COMPROMISE:
-            if not is_meeting_active():
-                _overlay_manager.clear()
-                print("[Worker] Secret detected, but Shield is OFF (No active meeting).")
-            else:
-                if not stable_boxes:
-                    _overlay_manager.clear()
-                else:
-                    _overlay_manager.set_boxes(stable_boxes)
 
             print(f"\n[🚀 OUTGOING ALERT] App: {alert.get('active_app')} | OCR: {alert.get('ocr_text')}\n")
             async with httpx.AsyncClient(timeout=3.0) as client:

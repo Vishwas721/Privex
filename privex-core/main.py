@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.documents import Document
 import uvicorn
@@ -28,6 +28,33 @@ class ResolvePayload(BaseModel):
     decision: str
     timestamp: float
     ocr_text: str = ""
+
+
+class ConnectionManager:
+    def __init__(self) -> None:
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, data: dict) -> None:
+        stale: list[WebSocket] = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(data)
+            except Exception:
+                stale.append(connection)
+
+        for connection in stale:
+            self.disconnect(connection)
+
+
+manager = ConnectionManager()
 
 
 # ✅ DEFINE FIRST
@@ -83,6 +110,34 @@ async def chat_endpoint(payload: ChatQuery):
     final_state = privex_app.invoke(initial_state)
     return final_state
 
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
+
+
+@app.post("/api/chat/broadcast")
+async def broadcast_alert(request: Request):
+    try:
+        data = await request.json()
+        print("=========================================")
+        print("📡 [FastAPI] Broadcast Request Received!")
+        print("📦 [FastAPI] Body Type:", type(data).__name__)
+        print("📦 [FastAPI] Payload Data:", data)
+        print("=========================================")
+        await manager.broadcast(data)
+        return {"status": "success", "message": "Broadcasted to UI"}
+    except Exception as e:
+        print(f"❌ [FastAPI] Broadcast Error: {e}")
+        return {"error": str(e)}
+
 @app.post("/api/resolve-alert")
 async def resolve_alert(payload: ResolvePayload):
     # 🧠 Teach the Memory Agent
@@ -129,10 +184,18 @@ def _run_with_system_tray() -> None:
         server.should_exit = True
 
     try:
-        print("🟢 Spawning System Tray Icon...") # <--- ADD THIS
-        run_system_tray(shutdown_event=shutdown_event, on_quit=_request_shutdown)
+        # 👇 BYPASS THE TRAY ICON CRASH 👇
+        print("🟢 Privex Backend Running! (Tray icon disabled to prevent Windows API crashes)")
+
+        # Keep the main thread alive safely
+        while not shutdown_event.is_set():
+            import time
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        pass
     finally:
-        print("🔴 Shutting down system tray and server...") # <--- ADD THIS
+        print("🔴 Shutting down server...")
         _request_shutdown()
         server_thread.join(timeout=10)
 

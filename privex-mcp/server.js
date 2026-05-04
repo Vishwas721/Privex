@@ -64,6 +64,26 @@ wss.on('connection', (ws) => {
   console.log('React UI connected via WebSocket');
 });
 
+app.post('/api/chat/broadcast', (req, res) => {
+  console.log('📡 [Node API] Received alert from Python Worker!');
+
+  try {
+    const payload = req.body;
+
+    // Broadcast to all connected React UI clients.
+    wss.clients.forEach((client) => {
+      if (client.readyState === 1) {
+        client.send(JSON.stringify(payload));
+      }
+    });
+
+    res.status(200).json({ status: 'success' });
+  } catch (error) {
+    console.error('❌ [Node API] Broadcast Error:', error);
+    res.status(500).json({ status: 'error' });
+  }
+});
+
 // 3. REST endpoint for Python Core -> Express IPC
 app.post('/api/alert', (req, res) => {
   console.log("[MCP-Server] 🚨 ALERT RECEIVED FROM PYTHON CORE:", req.body);

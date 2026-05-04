@@ -11,6 +11,13 @@ _CACHE_TTL_SECONDS = 0.25
 _cache_lock = threading.Lock()
 _cached_value = True
 _last_check_ts = 0.0
+_MEETING_KEYWORDS = (
+    "zoom meeting",
+    "meet - ",
+    "google meet",
+    "meet.google.com",
+    "microsoft teams",
+)
 
 
 def _iter_subkey_names(key_handle: winreg.HKEYType) -> list[str]:
@@ -79,12 +86,33 @@ def _compute_meeting_active() -> bool:
         return True
 
     try:
+        try:
+            import win32gui
+
+            # 👇 NEW LOGIC: Scan ALL open windows, not just the active one
+            def enum_windows_callback(hwnd, active_titles):
+                if win32gui.IsWindowVisible(hwnd):
+                    title = win32gui.GetWindowText(hwnd)
+                    if title:
+                        active_titles.append(title.lower())
+
+            active_titles = []
+            win32gui.EnumWindows(enum_windows_callback, active_titles)
+
+            matched_keywords = [k for k in _MEETING_KEYWORDS if any(k in t for t in active_titles)]
+            # Only print if we find a match to avoid spam, or print a summary
+            print(f"🔍 [Meeting Hook] Scanned {len(active_titles)} windows. Matches found: {matched_keywords}")
+
+            if matched_keywords:
+                return True
+        except Exception:
+            pass
+
+        # Fallback to microphone/webcam registry checks
         return any(_capability_active(cap) for cap in _CAPABILITIES)
     except OSError:
-        # Fail open so firewall protection stays active if registry probing is unavailable.
         return True
     except Exception:
-        # Defensive fail-open for unexpected parsing/platform edge cases.
         return True
 
 

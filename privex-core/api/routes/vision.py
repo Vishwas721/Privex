@@ -1,3 +1,5 @@
+import time
+
 from fastapi import APIRouter, Response, status
 
 from core.database import log_event
@@ -9,7 +11,10 @@ router = APIRouter()
 
 @router.post("/api/analyze-frame", status_code=status.HTTP_202_ACCEPTED)
 async def analyze_frame(payload: FramePayload) -> Response:
+    receive_start = time.perf_counter()
     await enqueue_frame(payload)
+    receive_end = time.perf_counter()
+    print(f"[⏱️ Profiler] FastAPI Network Receive -> Queue: {(receive_end - receive_start) * 1000:.2f} ms")
     return Response(status_code=status.HTTP_202_ACCEPTED)
 
 

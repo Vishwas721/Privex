@@ -14,6 +14,7 @@ import {
 
 import AlertCard from './components/AlertCard';
 import LedgerTable from './components/LedgerTable';
+import ThreatOverlay from './components/ThreatOverlay';
 
 function statusDot(colorClass) {
   return <Circle className={`h-2.5 w-2.5 fill-current ${colorClass}`} />;
@@ -31,6 +32,8 @@ function createAssistantResponse(userText) {
 function App() {
   const [activeView, setActiveView] = useState('dashboard');
   const [alerts, setAlerts] = useState([]);
+  const [isThreatActive, setIsThreatActive] = useState(false);
+  const [threatMessage, setThreatMessage] = useState('');
   const [socketState, setSocketState] = useState('connecting');
   const [messages, setMessages] = useState([
     {
@@ -43,6 +46,18 @@ function App() {
   const [isSending, setIsSending] = useState(false);
   const chatBottomRef = useRef(null);
   const coreApiUrl = import.meta.env.VITE_CORE_API_URL || 'http://localhost:8000';
+
+  function containsThreatAlert(text) {
+    // Look for the text, ignoring whatever the emojis turned into
+    return typeof text === 'string' && text.includes('**PHISHING ALERT**');
+  }
+
+  function triggerThreatOverlay(message) {
+    // If the emojis got corrupted, replace them back to 🚨 for the UI
+    const cleanMessage = message ? message.replace(/�/g, '🚨') : '🚨 **PHISHING ALERT** 🚨';
+    setThreatMessage(cleanMessage);
+    setIsThreatActive(true);
+  }
 
   // WebSocket alerts management
   useEffect(() => {
@@ -62,9 +77,32 @@ function App() {
     };
 
     ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
+      console.log('=========================================');
+      console.log('📥 [UI] Raw WebSocket Event Received!');
+      console.log('📥 [UI] Event Data Type:', typeof event.data);
+      console.log('📥 [UI] Raw Data:', event.data);
 
+      try {
+        // 1. Check if the raw string matches (in case it's not JSON)
+        if (containsThreatAlert(event.data)) {
+          console.log('🛡️ [UI] Caught threat in RAW STRING! Triggering overlay.');
+          triggerThreatOverlay(event.data);
+          return;
+        }
+
+        // 2. Parse the JSON
+        const data = JSON.parse(event.data);
+        console.log('🧩 [UI] Successfully parsed JSON:', data);
+
+        // 3. Check if the parsed JSON contains the threat
+        const backendMessage = data?.response || data?.message || '';
+        if (containsThreatAlert(backendMessage)) {
+          console.log('🛡️ [UI] Caught threat in JSON MESSAGE! Triggering overlay.');
+          triggerThreatOverlay(backendMessage);
+          return;
+        }
+
+        console.log('✅ [UI] Regular payload, updating alerts state.');
         if (!data.id) {
           console.error('CRITICAL: Received untracked alert without an ID. Dropping payload to maintain audit integrity.');
           return;
@@ -87,8 +125,10 @@ function App() {
           return [normalizedAlert, ...currentAlerts];
         });
       } catch (err) {
-        console.error('Failed to parse WebSocket alert payload:', err);
+        // THIS IS LIKELY WHERE YOUR APP IS SILENTLY DYING
+        console.error('❌ [UI] CRITICAL PARSE ERROR in WebSocket message:', err);
       }
+      console.log('=========================================');
     };
 
     return () => {
@@ -185,6 +225,10 @@ function App() {
 
     try {
       const aiMessage = await sendMessage(trimmed);
+      if (containsThreatAlert(aiMessage?.text)) {
+        triggerThreatOverlay(aiMessage.text);
+        return;
+      }
       setMessages((current) => [...current, aiMessage]);
     } finally {
       setIsSending(false);
@@ -193,6 +237,11 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
+      <ThreatOverlay
+        isActive={isThreatActive}
+        message={threatMessage}
+        onDismiss={() => setIsThreatActive(false)}
+      />
       <div className="flex h-screen w-full flex-col md:flex-row">
         <aside className="w-full border-b border-slate-800 bg-slate-950/80 p-6 backdrop-blur md:w-64 md:border-r md:border-b-0 md:flex md:flex-col">
           <div className="mb-8 flex items-center gap-2 text-lg font-semibold tracking-[0.15em] text-indigo-300">

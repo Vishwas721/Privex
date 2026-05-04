@@ -5,7 +5,7 @@ import sharp from 'sharp';
 
 // The .env should be: AI_CORE_URL=http://localhost:8000/api/analyze-frame
 const AI_CORE_URL = process.env.AI_CORE_URL; 
-const FRAME_INTERVAL_MS = 200;
+const FRAME_INTERVAL_MS = 1000;
 const REQUEST_TIMEOUT_MS = 5000;
 if (!AI_CORE_URL) {
   console.error('AI_CORE_URL is not set. Screen agent will fail.');

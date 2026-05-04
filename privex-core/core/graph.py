@@ -1,16 +1,22 @@
 import json
 import os
 import re
+from datetime import datetime
 from typing import Literal
 
+from dotenv import load_dotenv
 from langchain_community.chat_models import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 from langgraph.graph import END, StateGraph
 
 from core.state import AgentState
 from core.graph_store import get_graph_store
 from core.vector_store import get_vector_store as _get_vector_store
+
+
+load_dotenv()
 
 
 class RouteDecision(BaseModel):
@@ -38,13 +44,62 @@ def get_llm(temperature: float = 0.0, is_json: bool = False):
 llm = get_llm(temperature=0.0, is_json=True)
 chat_llm = get_llm(temperature=0.3, is_json=False)
 
+# Prefer the newer Gemini-specific key, then fall back to the legacy Google key.
+api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+if not api_key:
+    raise ValueError("GEMINI_API_KEY or GOOGLE_API_KEY must be set in the environment to run the Memory Agent.")
+
+# Initialize Gemini strictly for the memory synthesis task.
+memory_llm = ChatGoogleGenerativeAI(
+    model="gemini-3.1-flash-lite-preview",
+    api_key=api_key,
+    temperature=0.0,
+    retries=2,
+)
+
+
+MEMORY_AGENT_SYSTEM_PROMPT = """
+You are the primary Synthesis Agent for "Privex", a local-first Visual Firewall.
+Your objective is to answer the user's query accurately using ONLY the provided external context.
+
+You have been provided with two distinct streams of memory context:
+<vector_context>: Semantic snapshots of the user's screen history (highly reliable for specific events, apps, and text).
+<graph_context>: Relational data mapping connections (often contains UI noise; use with caution).
+
+CRITICAL GUARDRAILS & FALLBACK PROTOCOL:
+- You are strictly forbidden from relying on your pre-trained parametric knowledge.
+- You must evaluate the user's query against the <vector_context> first.
+- If the answer to the user's query is NOT clearly and explicitly stated in either context, or if the context consists only of irrelevant UI noise, you MUST output exactly: "I have no memory of this in my current context."
+- NEVER guess, infer, or hallucinate an answer to please the user.
+- If the context mentions "Python" but the user asks about "LeetCode", do not conflate the two. Return the fallback.
+
+SYNTHESIS PROTOCOL:
+1. Search the <vector_context> for the exact event (e.g., watching a video, solving a specific problem).
+2. If found, cross-reference with <graph_context> for temporal state, but trust the Vector data for the factual event.
+3. Formulate a concise, professional response.
+
+<vector_context>
+{formatted_vector_documents}
+</vector_context>
+
+<graph_context>
+{formatted_graph_traversal_results}
+</graph_context>
+
+User Query: {user_query}
+"""
+
 
 def route_query(state: AgentState) -> dict:
     """Deterministically map user input to one sub-agent."""
     user_query = state.get("user_query", "")
+    current_time = datetime.now().strftime("%A, %B %d, %Y %H:%M:%S")
     messages = [
         (
             "system",
+            f"You are the query extraction engine for Privex.\n"
+            f"The current system time is: {current_time}.\n\n"
+            "If the user asks about \"yesterday\", \"last week\", or \"this morning\", you MUST translate that into the correct specific date format (YYYY-MM-DD) before querying the database.\n\n"
             "You are a strict conversational router. Choose one agent based on the user's input:\n\n"
             "memory_agent: Choose this for ANY question about the past, history, or what the user was doing. EVEN IF the user asks about 'secrets', 'passwords', or 'keys', if it is framed as a question, route it here.\n"
             "firewall_agent: Choose this ONLY IF the input is a raw, unstructured OCR text dump that looks like a screen capture containing a secret.\n"
@@ -138,21 +193,32 @@ def memory_agent_node(state: AgentState) -> dict:
     print(formatted_context)
     print("🚨 ----------------------------------------- 🚨\n")
 
-    system_text = (
-        "You are Privex, a highly precise, privacy-first AI. Answer the user's question using ONLY the Memory Context below.\n"
-        "RULE 1: A 'secret' strictly refers to specific cryptographic keys or credentials (e.g., AWS Key, Database Password, GitHub Token).\n"
-        "RULE 2: If a row says 'Secret: Unknown', 'Secret: none', or 'Secret: secret', IT IS A FALSE POSITIVE. Ignore it completely when looking for secrets.\n"
-        "RULE 3: If the user asks about ANY topic, event, application, or secret that is NOT explicitly mentioned in the Memory Context, do NOT guess, hypothesize, or list other platforms. You MUST reply EXACTLY with: 'I have no memory of this in my current context.'\n\n"
-        f"Memory Context:\n{formatted_context}"
+    system_text = MEMORY_AGENT_SYSTEM_PROMPT.format(
+        formatted_vector_documents=vector_context,
+        formatted_graph_traversal_results=graph_context,
+        user_query=query,
     )
 
     try:
-        response = chat_llm.invoke([
+        response = memory_llm.invoke([
             SystemMessage(content=system_text),
             HumanMessage(content=query),
         ])
+
+        final_text = ""
+        if isinstance(getattr(response, "content", None), list):
+            for block in response.content:
+                if isinstance(block, dict) and "text" in block:
+                    final_text += str(block["text"])
+                elif hasattr(block, "text"):
+                    final_text += str(block.text)
+                else:
+                    final_text += str(block)
+        else:
+            final_text = str(getattr(response, "content", response))
+
         return {
-            "response": response.content,
+            "response": final_text,
             "proposed_action": "search_local_memory", # Let the deterministic Risk Engine handle the boolean!
         }
     except Exception as e:
