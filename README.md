@@ -1,4 +1,4 @@
-# Privex
+# PRIVEX
 
 Modular, local-first agentic AI system.
 
